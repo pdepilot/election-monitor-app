@@ -16,7 +16,19 @@ $token = $_POST['csrf_token'] ?? null;
 $invalidPost = $_SERVER['REQUEST_METHOD'] === 'POST' && (!is_string($token) || !csrf_verify($token));
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && !$invalidPost) {
+    $user = auth_user();
+    if ($user !== null && auth_is_idle_role($user['role']) && isset($_POST['idle']) && (string) $_POST['idle'] === '1') {
+        try {
+            db()->prepare('DELETE FROM remember_tokens WHERE user_id = :user_id')->execute(['user_id' => (int) $user['id']]);
+        } catch (Throwable $e) {
+            error_log('Idle logout remember cleanup failed: ' . $e->getMessage());
+        }
+    }
     auth_logout();
+    if (isset($_POST['idle']) && (string) $_POST['idle'] === '1') {
+        header('Location: ' . url('portal/login.php') . '?idle=1', true, 302);
+        exit;
+    }
     redirect_to('portal/login.php');
 }
 

@@ -146,7 +146,7 @@ function render_shell_start(string $title, string $activeNav, array $user): void
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.5.2/css/all.min.css">
     <style nonce="<?= e(app_csp_nonce()) ?>"><?= dashboard_css() ?></style>
 </head>
-<body class="cms-app<?= $mode === 'dark' ? ' dark' : '' ?>" data-page="<?= e($activeNav) ?>" data-theme="<?= e($theme) ?>" data-mode="<?= e($mode) ?>" data-cookie-path="<?= e(app_cookie_path()) ?>">
+<body class="cms-app<?= $mode === 'dark' ? ' dark' : '' ?>" data-page="<?= e($activeNav) ?>" data-theme="<?= e($theme) ?>" data-mode="<?= e($mode) ?>" data-cookie-path="<?= e(app_cookie_path()) ?>"<?php if (auth_is_idle_role($user['role'])): ?> data-idle-seconds="<?= (int) AUTH_ADMIN_IDLE_SECONDS ?>" data-idle-logout="<?= e(url('portal/logout.php')) ?>" data-csrf-token="<?= e(csrf_token()) ?>"<?php endif; ?>>
     <div class="cms-sidebar-overlay" id="cmsSidebarOverlay" hidden></div>
     <div class="cms-layout">
         <aside class="cms-sidebar" id="cmsSidebar" aria-label="Main navigation">

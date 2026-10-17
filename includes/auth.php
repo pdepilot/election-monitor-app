@@ -31,6 +31,8 @@ const AUTH_LOCKED_MESSAGE = 'This account has been locked after repeated failed 
 const AUTH_DUMMY_HASH = '$2y$10$uk4a92e/djZ5sUKiU/yRuuLAl4MDGH4GHk.fPgrUMS.Whbc0ZsxnG';
 
 const AUTH_PASSWORD_CHANGE_PAGES = ['portal/change-password.php', 'portal/logout.php', 'portal/login.php'];
+const AUTH_ADMIN_IDLE_SECONDS = 600;
+const AUTH_IDLE_ROLES = ['super_admin', 'admin'];
 
 function auth_boot(): void
 {
@@ -38,7 +40,63 @@ function auth_boot(): void
     if (auth_user() === null) {
         auth_restore_remember();
     }
+    auth_enforce_admin_idle();
     auth_require_password_change();
+}
+
+function auth_is_idle_role(string $role): bool
+{
+    return in_array($role, AUTH_IDLE_ROLES, true);
+}
+
+/**
+ * Administrators and super administrators are signed out after AUTH_ADMIN_IDLE_SECONDS
+ * without a request. Remember-me tokens for that account are revoked so the session
+ * cannot silently return.
+ */
+function auth_enforce_admin_idle(): void
+{
+    if (PHP_SAPI === 'cli') {
+        return;
+    }
+    $user = auth_user();
+    if ($user === null || !auth_is_idle_role($user['role'])) {
+        return;
+    }
+
+    $now = time();
+    $last = $_SESSION['last_activity'] ?? null;
+    if (is_int($last) && $last > 0 && ($now - $last) >= AUTH_ADMIN_IDLE_SECONDS) {
+        auth_end_idle_session((int) $user['id']);
+        return;
+    }
+    $_SESSION['last_activity'] = $now;
+}
+
+function auth_end_idle_session(int $userId): void
+{
+    try {
+        $revoke = db()->prepare('DELETE FROM remember_tokens WHERE user_id = :user_id');
+        $revoke->execute(['user_id' => $userId]);
+    } catch (Throwable $e) {
+        error_log('Idle logout remember cleanup failed: ' . $e->getMessage());
+    }
+    auth_logout();
+
+    $script = realpath((string) ($_SERVER['SCRIPT_FILENAME'] ?? ''));
+    $root = realpath(dirname(__DIR__));
+    $relative = $script !== false && $root !== false
+        ? ltrim(str_replace('\\', '/', substr($script, strlen($root))), '/')
+        : '';
+    if (str_starts_with(basename($relative), 'api-') || $relative === 'results/live-feed.php') {
+        http_response_code(401);
+        header('Content-Type: application/json; charset=utf-8');
+        header('Cache-Control: no-store');
+        echo json_encode(['ok' => false, 'error' => 'auth_required', 'message' => 'Your session ended after 10 minutes of inactivity. Sign in again.']);
+        exit;
+    }
+    header('Location: ' . url('portal/login.php') . '?idle=1', true, 302);
+    exit;
 }
 
 function auth_password_flags_ready(): bool
@@ -458,7 +516,10 @@ function auth_establish(int $userId, bool $remember): void
 {
     app_start_session();
     session_regenerate_id(true);
-    $_SESSION = ['user_id' => $userId];
+    $_SESSION = [
+        'user_id' => $userId,
+        'last_activity' => time(),
+    ];
     auth_clear_user_cache();
 
     if ($remember) {

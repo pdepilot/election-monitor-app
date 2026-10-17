@@ -142,6 +142,55 @@ function dashboard_js(): string
             });
         });
     }
+
+    (function idleLogout() {
+        var seconds = parseInt(document.body.getAttribute('data-idle-seconds') || '', 10);
+        var logoutUrl = document.body.getAttribute('data-idle-logout') || '';
+        var csrf = document.body.getAttribute('data-csrf-token') || '';
+        if (!seconds || seconds < 1 || !logoutUrl || !csrf) {
+            return;
+        }
+        var timer = null;
+        var signingOut = false;
+        function signOut() {
+            if (signingOut) {
+                return;
+            }
+            signingOut = true;
+            var form = document.createElement('form');
+            form.method = 'post';
+            form.action = logoutUrl;
+            form.style.display = 'none';
+            var token = document.createElement('input');
+            token.type = 'hidden';
+            token.name = 'csrf_token';
+            token.value = csrf;
+            var idle = document.createElement('input');
+            idle.type = 'hidden';
+            idle.name = 'idle';
+            idle.value = '1';
+            form.appendChild(token);
+            form.appendChild(idle);
+            document.body.appendChild(form);
+            form.submit();
+        }
+        function bump() {
+            if (signingOut) {
+                return;
+            }
+            window.clearTimeout(timer);
+            timer = window.setTimeout(signOut, seconds * 1000);
+        }
+        ['mousemove', 'mousedown', 'keydown', 'touchstart', 'scroll', 'focus'].forEach(function (name) {
+            document.addEventListener(name, bump, { passive: true, capture: true });
+        });
+        document.addEventListener('visibilitychange', function () {
+            if (!document.hidden) {
+                bump();
+            }
+        });
+        bump();
+    })();
 })();
 JS;
 }

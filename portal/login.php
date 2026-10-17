@@ -15,6 +15,13 @@ if ($currentUser !== null) {
 
 $error = '';
 $loginValue = '';
+if (
+    $_SERVER['REQUEST_METHOD'] !== 'POST'
+    && isset($_GET['idle'])
+    && (string) $_GET['idle'] === '1'
+) {
+    $error = 'You were signed out after 10 minutes of inactivity. Sign in again to continue.';
+}
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $loginRaw = $_POST['login'] ?? '';
