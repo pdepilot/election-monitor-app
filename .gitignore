@@ -1,0 +1,19 @@
+# Local secrets and machine-specific config
+config/env.php
+
+# Composer dependencies (install with: composer install --no-dev)
+/vendor/
+
+# Runtime / local-only storage
+/storage/logs/*
+!/storage/logs/.gitkeep
+/storage/mail-capture/*
+!/storage/mail-capture/.gitkeep
+
+# OS / editor
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/
+*.tmp

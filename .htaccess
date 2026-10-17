@@ -1,0 +1,33 @@
+Options -MultiViews -Indexes
+DirectorySlash Off
+RewriteEngine On
+RewriteBase /election-monitor-app/
+
+# Application code, account scripts, and schema files stay off the web.
+RewriteRule ^(config|includes|scripts|storage|vendor)(/|$) - [F,L]
+RewriteRule ^database/.+\.(php|sql)$ - [F,L]
+RewriteRule ^composer\.(json|lock)$ - [F,L]
+
+# A typed or bookmarked .php address is sent to the same path without the extension.
+RewriteCond %{REQUEST_METHOD} ^(GET|HEAD)$
+RewriteCond %{THE_REQUEST} \s[^\s?]*\.php(?:[\s?]|$) [NC]
+RewriteRule ^index\.php$ /election-monitor-app/ [R=301,L,QSA,NC]
+
+RewriteCond %{REQUEST_METHOD} ^(GET|HEAD)$
+RewriteCond %{THE_REQUEST} \s[^\s?]*\.php(?:[\s?]|$) [NC]
+RewriteRule ^(.+)/index\.php$ $1 [R=301,L,QSA,NC]
+
+RewriteCond %{REQUEST_METHOD} ^(GET|HEAD)$
+RewriteCond %{THE_REQUEST} \s[^\s?]*\.php(?:[\s?]|$) [NC]
+RewriteRule ^(.+)\.php$ $1 [R=301,L,QSA,NE,NC]
+
+# A section folder such as /collation runs that folder's index page.
+RewriteCond %{REQUEST_FILENAME} -d
+RewriteCond %{REQUEST_FILENAME}/index.php -f
+RewriteRule ^(.+?)/?$ $1/index.php [L]
+
+# The browser path has no extension. Apache still runs the PHP file.
+RewriteCond %{REQUEST_FILENAME} !-d
+RewriteCond %{REQUEST_FILENAME} !-f
+RewriteCond %{REQUEST_FILENAME}.php -f
+RewriteRule ^(.+?)/?$ $1.php [L]
