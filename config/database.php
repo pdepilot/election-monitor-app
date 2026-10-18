@@ -37,19 +37,47 @@ function app_config(): array
         return (string) $fileConfig[$key];
     };
 
-    $password = getenv('DB_PASS');
-    if ($password === false) {
-        $password = array_key_exists('db_pass', $fileConfig) && is_scalar($fileConfig['db_pass'])
-            ? (string) $fileConfig['db_pass']
-            : '';
+    // DB_USER and DB_PASS must be set explicitly (environment or config/env.php).
+    // There is no silent fallback to MySQL root with an empty password.
+    // An empty password is allowed only when DB_PASS or env.php db_pass is set explicitly
+    // (typical local XAMPP). Prefer a dedicated least-privilege user for any shared host.
+    $dbUserEnv = getenv('DB_USER');
+    if (is_string($dbUserEnv) && $dbUserEnv !== '') {
+        $dbUser = $dbUserEnv;
+    } elseif (array_key_exists('db_user', $fileConfig) && is_scalar($fileConfig['db_user']) && (string) $fileConfig['db_user'] !== '') {
+        $dbUser = (string) $fileConfig['db_user'];
+    } else {
+        $dbUser = null;
+    }
+
+    $dbPassEnv = getenv('DB_PASS');
+    if ($dbPassEnv !== false) {
+        $dbPass = (string) $dbPassEnv;
+    } elseif (array_key_exists('db_pass', $fileConfig) && is_scalar($fileConfig['db_pass'])) {
+        $dbPass = (string) $fileConfig['db_pass'];
+    } else {
+        $dbPass = null;
+    }
+
+    if ($dbUser === null || $dbPass === null) {
+        error_log('Database credentials are not configured. Set DB_USER and DB_PASS, or db_user and db_pass in config/env.php.');
+        if (PHP_SAPI === 'cli') {
+            fwrite(STDERR, "Database credentials are not configured. Copy config/env.example.php to config/env.php and set db_user and db_pass.\n");
+            exit(1);
+        }
+        if (!headers_sent()) {
+            http_response_code(500);
+        }
+        echo 'The service is temporarily unavailable. Please try again later.';
+        exit;
     }
 
     $config = [
         'db_host' => $fromEnv('DB_HOST') ?? $fromFile('db_host', '127.0.0.1'),
         'db_port' => (int) ($fromEnv('DB_PORT') ?? $fromFile('db_port', '3306')),
         'db_name' => $fromEnv('DB_NAME') ?? $fromFile('db_name', 'election_monitor_app'),
-        'db_user' => $fromEnv('DB_USER') ?? $fromFile('db_user', 'root'),
-        'db_pass' => $password,
+        'db_user' => $dbUser,
+        'db_pass' => $dbPass,
     ];
     $privateDir = $fromEnv('EM_PRIVATE_DIR') ?? $fromFile('private_dir', dirname(__DIR__, 3) . DIRECTORY_SEPARATOR . 'election-monitor-private');
     $config['private_dir'] = rtrim($privateDir, '\\/');
@@ -66,8 +94,84 @@ function app_config(): array
     $config['smtp_encryption'] = strtolower($fromEnv('SMTP_ENCRYPTION') ?? $fromFile('smtp_encryption', 'tls'));
     $config['smtp_username'] = $fromEnv('SMTP_USERNAME') ?? $fromFile('smtp_username', '');
     $config['smtp_password'] = $fromEnv('SMTP_PASSWORD') ?? $fromFile('smtp_password', '');
+    $config['trusted_proxies'] = $fromEnv('TRUSTED_PROXIES') ?? $fromFile('trusted_proxies', '');
+    $forceHttps = $fromEnv('FORCE_HTTPS');
+    if ($forceHttps !== null) {
+        $config['force_https'] = in_array(strtolower($forceHttps), ['1', 'true', 'yes', 'on'], true);
+    } else {
+        $rawForce = $fileConfig['force_https'] ?? false;
+        $config['force_https'] = is_bool($rawForce)
+            ? $rawForce
+            : in_array(strtolower((string) $rawForce), ['1', 'true', 'yes', 'on'], true);
+    }
+    $enableHsts = $fromEnv('ENABLE_HSTS');
+    if ($enableHsts !== null) {
+        $config['enable_hsts'] = in_array(strtolower($enableHsts), ['1', 'true', 'yes', 'on'], true);
+    } else {
+        $rawHsts = $fileConfig['enable_hsts'] ?? false;
+        $config['enable_hsts'] = is_bool($rawHsts)
+            ? $rawHsts
+            : in_array(strtolower((string) $rawHsts), ['1', 'true', 'yes', 'on'], true);
+    }
 
     return $config;
+}
+
+/**
+ * True when $path resolves under $root (both normalized). Used to keep private storage and keys off the web tree.
+ */
+function app_path_is_under(string $path, string $root): bool
+{
+    $rootReal = realpath($root);
+    if ($rootReal === false) {
+        return false;
+    }
+    $pathReal = realpath($path);
+    if ($pathReal === false) {
+        $parent = realpath(dirname($path));
+        if ($parent === false) {
+            return false;
+        }
+        $pathReal = $parent . DIRECTORY_SEPARATOR . basename($path);
+    }
+    $rootNorm = strtolower(rtrim(str_replace('\\', '/', $rootReal), '/') . '/');
+    $pathNorm = strtolower(str_replace('\\', '/', $pathReal));
+
+    return str_starts_with($pathNorm . '/', $rootNorm) || str_starts_with($pathNorm, rtrim($rootNorm, '/'));
+}
+
+/**
+ * Refuse private_dir / sheet_key_file locations under the document root or the application directory.
+ *
+ * @return list<string> human-readable problems (empty when safe)
+ */
+function app_storage_path_problems(): array
+{
+    static $problems = null;
+    if ($problems !== null) {
+        return $problems;
+    }
+    $problems = [];
+    $config = app_config();
+    $appRoot = dirname(__DIR__);
+    $docRoot = $_SERVER['DOCUMENT_ROOT'] ?? '';
+    $targets = [
+        'private_dir' => (string) $config['private_dir'],
+        'sheet_key_file' => (string) $config['sheet_key_file'],
+    ];
+    foreach ($targets as $label => $path) {
+        if ($path === '') {
+            continue;
+        }
+        if (is_string($docRoot) && $docRoot !== '' && app_path_is_under($path, $docRoot)) {
+            $problems[] = $label . ' must not be under the web document root.';
+        }
+        if (app_path_is_under($path, $appRoot)) {
+            $problems[] = $label . ' must not be under the application directory.';
+        }
+    }
+
+    return $problems;
 }
 
 function db(): PDO

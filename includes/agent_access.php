@@ -52,20 +52,26 @@ function agent_assigned_units(int $userId): array
 }
 
 /**
- * Candidate scores saved on one result sheet.
+ * Candidate scores saved on one result sheet for a unit assigned to this agent.
  *
  * @return list<array{party: string, full_name: string, votes: int}>
  */
-function agent_result_scores(int $resultId): array
+function agent_result_scores(int $resultId, int $agentUserId): array
 {
+    if ($resultId < 1 || $agentUserId < 1) {
+        return [];
+    }
     $statement = db()->prepare(
         'SELECT c.party, c.full_name, v.votes
          FROM polling_unit_result_votes v
          INNER JOIN candidates c ON c.id = v.candidate_id
-         WHERE v.result_id = :id
+         INNER JOIN polling_unit_results r ON r.id = v.result_id
+         INNER JOIN polling_units pu ON pu.id = r.polling_unit_id
+         WHERE v.result_id = :id AND pu.agent_user_id = :agent
          ORDER BY c.sort_order, c.party, c.full_name'
     );
     $statement->bindValue(':id', $resultId, PDO::PARAM_INT);
+    $statement->bindValue(':agent', $agentUserId, PDO::PARAM_INT);
     $statement->execute();
     $rows = [];
     foreach ($statement as $row) {

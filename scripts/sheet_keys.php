@@ -32,12 +32,18 @@ function keys_file(): string
 
 function keys_guard_location(string $file): void
 {
-    $dir = dirname($file);
+    $appRoot = realpath(dirname(__DIR__));
     $webRoot = realpath(dirname(__DIR__, 2));
-    $resolved = realpath($dir) ?: $dir;
-    if ($webRoot !== false && str_starts_with(strtolower($resolved . DIRECTORY_SEPARATOR), strtolower($webRoot . DIRECTORY_SEPARATOR))) {
-        fwrite(STDERR, "Refusing: the key file must not be inside the web root ({$webRoot}).\n");
-        exit(1);
+    $targets = [dirname($file), $file];
+    foreach ($targets as $target) {
+        if ($webRoot !== false && function_exists('app_path_is_under') && app_path_is_under($target, $webRoot)) {
+            fwrite(STDERR, "Refusing: the key file must not be inside the web root ({$webRoot}).\n");
+            exit(1);
+        }
+        if ($appRoot !== false && function_exists('app_path_is_under') && app_path_is_under($target, $appRoot)) {
+            fwrite(STDERR, "Refusing: the key file must not be inside the application directory ({$appRoot}).\n");
+            exit(1);
+        }
     }
 }
 

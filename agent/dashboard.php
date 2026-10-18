@@ -48,7 +48,7 @@ render_shell_start('My polling unit', 'dashboard', $user);
         $status = $unit['status'] === null ? 'Not entered' : ((string) $unit['status'] === 'submitted' ? 'Submitted' : 'Draft');
         $badge = $unit['status'] === null ? 'cms-badge--warn' : ((string) $unit['status'] === 'submitted' ? 'cms-badge--ok' : 'cms-badge--warn');
         $action = $unit['result_id'] === null ? 'Enter result' : ((string) $unit['status'] === 'submitted' ? 'View submitted result' : 'Continue result');
-        $scores = $unit['result_id'] === null ? [] : agent_result_scores((int) $unit['result_id']);
+        $scores = $unit['result_id'] === null ? [] : agent_result_scores((int) $unit['result_id'], (int) $user['id']);
         $sheet = sheet_schema_ready() ? sheet_latest_for_unit((int) $unit['id']) : null;
     ?>
     <article class="cms-card">
@@ -92,6 +92,7 @@ render_shell_start('My polling unit', 'dashboard', $user);
 <?php if ($offlineSync): ?>
 <script nonce="<?= e(app_csp_nonce()) ?>" src="<?= e(asset_url('assets/js/offline-store.js')) ?>"></script>
 <script nonce="<?= e(app_csp_nonce()) ?>" src="<?= e(asset_url('assets/js/offline-sync.js')) ?>"></script>
+<?php /* offline-logout.js is loaded once from render_shell_end() for all agent pages */ ?>
 <script nonce="<?= e(app_csp_nonce()) ?>" src="<?= e(asset_url('assets/js/offline-register.js')) ?>"></script>
 <?php endif; ?>
 <?php

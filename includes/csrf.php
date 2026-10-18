@@ -9,9 +9,20 @@ function csrf_token(): string
 
     $token = $_SESSION['csrf_token'] ?? '';
     if (!is_string($token) || strlen($token) !== 64) {
-        $token = bin2hex(random_bytes(32));
-        $_SESSION['csrf_token'] = $token;
+        $token = csrf_rotate();
     }
+
+    return $token;
+}
+
+/** Issue a fresh CSRF token (login, password change, privilege boundary). */
+function csrf_rotate(): string
+{
+    if (session_status() !== PHP_SESSION_ACTIVE) {
+        throw new RuntimeException('Session has not been started.');
+    }
+    $token = bin2hex(random_bytes(32));
+    $_SESSION['csrf_token'] = $token;
 
     return $token;
 }

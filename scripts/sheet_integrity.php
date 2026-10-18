@@ -22,8 +22,9 @@ Usage:
       For a legacy upload (no fingerprint from upload time), record today's SHA-256 as a baseline.
       The upload stays UNVERIFIED LEGACY. The baseline only shows the file has not changed since now.
 
-  php scripts/sheet_integrity.php checkpoint
+  php scripts/sheet_integrity.php checkpoint [save]
       Print a signed JSON checkpoint of all upload fingerprints and the head of the event trail.
+      With "save", also write a copy under private_dir/checkpoints/ (outside the web root).
       Copy it to a location the application server cannot write to (for example, email it to a
       separate account or store it on separate media). Later checkpoints can be compared with it.
 
@@ -128,7 +129,27 @@ if ($command === 'checkpoint') {
     $checkpoint['hmac'] = $keys['current'] !== null
         ? hash_hmac('sha256', json_encode($checkpoint, JSON_UNESCAPED_SLASHES), $keys['keys'][$keys['current']])
         : null;
-    fwrite(STDOUT, json_encode($checkpoint, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . PHP_EOL);
+    $json = json_encode($checkpoint, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . PHP_EOL;
+    fwrite(STDOUT, $json);
+    if (($argv[2] ?? '') === 'save') {
+        $dir = app_config()['private_dir'] . DIRECTORY_SEPARATOR . 'checkpoints';
+        if (!is_dir($dir) && !mkdir($dir, 0700, true) && !is_dir($dir)) {
+            fwrite(STDERR, "Could not create private checkpoint directory.\n");
+            exit(1);
+        }
+        $problems = function_exists('app_storage_path_problems') ? app_storage_path_problems() : [];
+        if ($problems !== []) {
+            fwrite(STDERR, "Refusing to save checkpoint: " . $problems[0] . "\n");
+            exit(1);
+        }
+        $out = $dir . DIRECTORY_SEPARATOR . 'checkpoint-' . gmdate('Ymd\THis') . 'Z.json';
+        if (file_put_contents($out, $json, LOCK_EX) === false) {
+            fwrite(STDERR, "Could not write checkpoint file.\n");
+            exit(1);
+        }
+        @chmod($out, 0600);
+        fwrite(STDERR, "Saved checkpoint outside the web root.\n");
+    }
     if ($keys['current'] === null) {
         fwrite(STDERR, "WARNING: no usable key, so this checkpoint is unsigned.\n");
         exit(1);

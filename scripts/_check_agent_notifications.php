@@ -1,7 +1,7 @@
 <?php
 declare(strict_types=1);
 
-// Phase E checks: polling-agent assignment emails, first sign-in password change, and retries.
+// Phase E / B checks: polling-agent assignment emails, password-setup links, and retries.
 // Uses temporary an.* accounts and unassigned polling units that are restored afterwards.
 // The web flow runs in the local capture mode from config/env.php; in-process checks use a
 // memory transport or an unreachable SMTP port. No real email is sent.
@@ -198,21 +198,25 @@ try {
 
     echo "-- create agent and assign (web flow, capture mode)\n";
     check(mailer_status()['ready'] && mailer_status()['transport'] === 'capture', 'local environment uses capture mode, so nothing leaves this machine');
+    check(auth_password_setup_schema_ready(), 'password_setup_tokens migration is applied');
     $admin = new Client();
     check(login($admin, 'an.admin', $pass['an.admin'])['code'] === 302, 'administrator signs in');
     $agentName = 'Ada <b>"O\'Neil"</b> & Co';
-    $agentPass = 'Start-' . bin2hex(random_bytes(9));
-    $secrets[] = $agentPass;
     $page = $admin->req('admin/polling-unit.php?id=' . $u1['id'] . '&mode=assign');
     $tok = token($page['body']);
-    check(str_contains($page['body'], 'Test mode: emails are captured'), 'creation form says email is in test mode');
-    $created1 = $admin->post('admin/polling-unit.php', ['csrf_token' => $tok, 'intent' => 'create_agent', 'id' => (string) $u1['id'], 'agent_name' => $agentName, 'agent_username' => 'an.newagent', 'agent_email' => 'AN.NewAgent@Example.test', 'agent_password' => $agentPass, 'agent_password_confirm' => $agentPass]);
+    check(str_contains($page['body'], 'Test mode: emails are captured') && !str_contains($page['body'], 'name="agent_password"'), 'creation form says email is in test mode and has no password fields');
+    $created1 = $admin->post('admin/polling-unit.php', ['csrf_token' => $tok, 'intent' => 'create_agent', 'id' => (string) $u1['id'], 'agent_name' => $agentName, 'agent_username' => 'an.newagent', 'agent_email' => 'AN.NewAgent@Example.test']);
     $newId = count_where("SELECT id FROM users WHERE username = 'an.newagent'");
     $ids['an.newagent'] = $newId;
     $msg = flash($created1);
     check($newId > 0 && count_where("SELECT COUNT(*) FROM users WHERE username = 'an.newagent'") === 1 && unit_agent((int) $u1['id']) === $newId, 'agent account created once and assigned to the unit');
     check(str_starts_with($msg, 'success: Polling agent registered and assigned') && str_contains($msg, 'Email captured locally for an.newagent@example.test (test mode). Nothing was sent.'), 'administrator sees a truthful status: captured, not "delivered"');
-    check(count_where('SELECT must_change_password FROM users WHERE id = :id', ['id' => $newId]) === 1, 'new agent must change the password at first sign-in');
+    $agentFlags = db()->query('SELECT must_change_password, password_changed_at FROM users WHERE id = ' . $newId)->fetch();
+    check((int) $agentFlags['must_change_password'] === 0 && $agentFlags['password_changed_at'] === null, 'new agent has no password set yet and is not forced through change-password');
+    $setupRow = db()->prepare('SELECT selector, token_hash, used_at, expires_at FROM password_setup_tokens WHERE user_id = :id AND used_at IS NULL ORDER BY id DESC LIMIT 1');
+    $setupRow->execute(['id' => $newId]);
+    $setupRow = $setupRow->fetch();
+    check(is_array($setupRow) && preg_match('/\A[a-f0-9]{24}\z/', (string) $setupRow['selector']) === 1 && strlen((string) $setupRow['token_hash']) === 64, 'a hashed single-use setup token was stored for the new agent');
     $n = notes($newId);
     check(count($n) === 1 && $n[0]['kind'] === 'account_created' && $n[0]['status'] === 'captured' && (int) $n[0]['includes_password'] === 1 && $n[0]['recipient_email'] === 'an.newagent@example.test' && $n[0]['unit_codes'] === $u1['unit_code'] && preg_match('/\A[0-9a-f-]{36}\z/', $n[0]['notification_id']) === 1, 'notification recorded with a unique ID, the agent\'s saved address, and the unit');
     $mails = new_captures();
@@ -222,21 +226,21 @@ try {
     check(str_contains(header_line($raw, 'To'), 'an.newagent@example.test') && !str_contains(header_line($raw, 'To'), 'an.admin'), 'recipient is the agent\'s saved email address, not the administrator\'s');
     check(header_line($raw, 'Subject') === 'Your Polling Agent Assignment and Account Details', 'professional subject line');
     check(str_contains($body, e($u1['name'])) && str_contains($body, $u1['unit_code']) && str_contains($body, e($u1['ward_name'])) && str_contains($body, e($u1['lga_name'])) && str_contains($body, 'Imo State'), 'polling-unit name, ID, ward, LGA and state are in the email');
-    check(str_contains($body, 'an.newagent') && str_contains($body, 'http://localhost/election-monitor-app/portal/login') && str_contains($body, 'choose a new password'), 'username, canonical sign-in URL and first sign-in steps are included');
+    check(str_contains($body, 'an.newagent') && str_contains($body, 'http://localhost/election-monitor-app/portal/login') && str_contains($body, 'Choose your own password'), 'username, canonical sign-in URL and setup steps are included');
     $html = html_part($raw);
     check(str_contains($html, 'Dear Ada &lt;b&gt;&quot;O&#039;Neil&quot;&lt;/b&gt; &amp; Co,') && !str_contains($html, '<b>"O\'Neil"</b>'), 'agent name is HTML-escaped in the HTML part');
     check(str_contains($raw, 'Content-Type: text/plain') && str_contains($raw, 'Content-Type: text/html') && str_contains($body, 'Dear Ada <b>"O\'Neil"</b> & Co,'), 'plain-text alternative is present');
-    check(!str_contains($raw, $agentPass) && str_contains($body, MAILER_CAPTURE_PLACEHOLDER), 'the local capture copy withholds the password');
+    check(!str_contains($raw, (string) $setupRow['selector']) && str_contains($body, MAILER_CAPTURE_PLACEHOLDER) && !str_contains($body, 'Temporary password'), 'the local capture copy withholds the setup link and never emails a temporary password');
     $logo = (string) file_get_contents(dirname(__DIR__) . '/' . AN_LOGO_FILE);
     $embedded = preg_match('/Content-ID: <' . preg_quote(AN_LOGO_CID, '/') . '>.*?\r?\n\r?\n([A-Za-z0-9+\/=\r\n]+)/s', $raw, $lm) ? base64_decode(preg_replace('/\s+/', '', $lm[1])) : '';
     check(str_contains($body, 'src="cid:' . AN_LOGO_CID . '"') && $embedded === $logo && str_contains($raw, AN_LOGO_MIME) && !preg_match('#src="(file:|[A-Za-z]:\\\\|/)#', $body), 'the campaign poster is embedded as a CID inline image (no filesystem path)');
-    check(str_contains($body, 'not an official INEC results platform') && str_contains($body, 'Never share your username or password'), 'footer says independent monitoring, not INEC; security reminder present');
+    check(str_contains($body, 'not an official INEC results platform') && str_contains($body, 'Never share your username, password, or setup link'), 'footer says independent monitoring, not INEC; security reminder present');
 
     echo "-- duplicates and invalid input\n";
     $tok = token($admin->req('admin/polling-unit.php?id=' . $u2['id'] . '&mode=assign')['body']);
-    $dup = $admin->req('admin/polling-unit.php', ['csrf_token' => $tok, 'intent' => 'create_agent', 'id' => (string) $u2['id'], 'agent_name' => 'Duplicate', 'agent_username' => 'an.newagent', 'agent_email' => 'other@example.test', 'agent_password' => $agentPass, 'agent_password_confirm' => $agentPass]);
+    $dup = $admin->req('admin/polling-unit.php', ['csrf_token' => $tok, 'intent' => 'create_agent', 'id' => (string) $u2['id'], 'agent_name' => 'Duplicate', 'agent_username' => 'an.newagent', 'agent_email' => 'other@example.test']);
     check(str_contains($dup['body'], 'already in use') && count_where("SELECT COUNT(*) FROM users WHERE username = 'an.newagent'") === 1 && unit_agent((int) $u2['id']) === 0 && count(notes($newId)) === 1 && new_captures() === [], 'repeating the username creates nothing and sends nothing');
-    $bad = $admin->req('admin/polling-unit.php', ['csrf_token' => $tok, 'intent' => 'create_agent', 'id' => (string) $u2['id'], 'agent_name' => 'Bad Mail', 'agent_username' => 'an.badform', 'agent_email' => 'bad@', 'agent_password' => $agentPass, 'agent_password_confirm' => $agentPass]);
+    $bad = $admin->req('admin/polling-unit.php', ['csrf_token' => $tok, 'intent' => 'create_agent', 'id' => (string) $u2['id'], 'agent_name' => 'Bad Mail', 'agent_username' => 'an.badform', 'agent_email' => 'bad@']);
     check(str_contains($bad['body'], 'Enter a valid email address.') && count_where("SELECT COUNT(*) FROM users WHERE username = 'an.badform'") === 0 && new_captures() === [], 'an invalid email address is rejected before any account or email');
 
     echo "-- assignment changes\n";
@@ -310,30 +314,27 @@ try {
     echo "-- SMTP outage and insecure settings (in-process)\n";
     $smtpDown = ['mail_transport' => 'smtp', 'smtp_host' => '127.0.0.1', 'smtp_port' => 1, 'smtp_encryption' => 'tls', 'smtp_username' => 'an-smtp-user', 'smtp_password' => $smtpSecret, 'mail_from' => 'no-reply@example.test', 'app_url' => 'https://monitor.example.test'];
     mailer_override($smtpDown);
-    $outagePass = 'Outage-' . bin2hex(random_bytes(9));
-    $secrets[] = $outagePass;
     $queued = null;
-    $reg = pu_register_agent((int) $u4['id'], ['agent_name' => 'Outage Agent', 'agent_username' => 'an.outage', 'agent_email' => 'an.outage@example.test', 'password' => $outagePass], $ids['an.admin'], static function (PDO $pdo, int $agentId) use (&$queued, $ids): void {
-        $pdo->prepare('UPDATE users SET must_change_password = 1 WHERE id = :id')->execute(['id' => $agentId]);
+    $reg = pu_register_agent((int) $u4['id'], ['agent_name' => 'Outage Agent', 'agent_username' => 'an.outage', 'agent_email' => 'an.outage@example.test'], $ids['an.admin'], static function (PDO $pdo, int $agentId) use (&$queued, $ids): void {
         $queued = an_queue($agentId, 'account_created', $ids['an.admin'], true);
     });
     $ids['an.outage'] = (int) ($reg['agent_id'] ?? 0);
-    $sent = an_send_account_email($queued, $outagePass);
+    $sent = an_send_account_email($queued);
     $row = an_find((string) $queued);
     check($reg['ok'] && !$sent['ok'] && str_contains($sent['text'], 'Email delivery failed: the mail server could not be reached. The assignment is saved') && $row['status'] === 'failed' && $row['last_error'] === 'smtp_unavailable', 'SMTP outage: failure reported, no false delivery claim');
     check(count_where("SELECT COUNT(*) FROM users WHERE username = 'an.outage'") === 1 && unit_agent((int) $u4['id']) === $ids['an.outage'], 'SMTP outage does not undo or duplicate the account and assignment');
-    $noPw = an_retry((string) $queued, $ids['an.admin']);
-    $mismatch = an_retry((string) $queued, $ids['an.admin'], 'Retry-' . bin2hex(random_bytes(8)), 'different-value-1234');
-    check(!$noPw['ok'] && str_contains($noPw['error'], 'original password is not stored') && !$mismatch['ok'] && an_find((string) $queued)['attempts'] == 1, 'account email retry requires a new starting password (the original is not kept)');
+    check((int) an_find((string) $queued)['attempts'] === 1, 'failed account email remains retryable without requiring a new password from the administrator');
     mailer_override(['mail_transport' => 'memory', 'app_url' => 'https://monitor.example.test']);
     $outbox = &mailer_memory_outbox();
     $outbox = [];
-    $retryPass = 'Retry-' . bin2hex(random_bytes(9));
-    $secrets[] = $retryPass;
-    $retried = an_retry((string) $queued, $ids['an.admin'], $retryPass, $retryPass);
-    $hash = (string) db()->query('SELECT password_hash FROM users WHERE id = ' . $ids['an.outage'])->fetchColumn();
-    check($retried['ok'] && $retried['status'] === 'sent' && count($outbox) === 1 && password_verify($retryPass, $hash) && !password_verify($outagePass, $hash) && count_where("SELECT COUNT(*) FROM users WHERE username = 'an.outage'") === 1, 'retry with a new starting password resets the hash and sends once, same account');
-    check(str_contains($outbox[0]['html'] ?? '', e($retryPass)) && str_contains($outbox[0]['text'] ?? '', 'Temporary password: ' . $retryPass) && str_contains($outbox[0]['html'] ?? '', 'https://monitor.example.test/portal/login'), 'the real message carries the password once and the canonical HTTPS URL');
+    $retried = an_retry((string) $queued, $ids['an.admin']);
+    check($retried['ok'] && $retried['status'] === 'sent' && count($outbox) === 1 && count_where("SELECT COUNT(*) FROM users WHERE username = 'an.outage'") === 1, 'retry issues a setup link and sends once, same account');
+    $setupLink = '';
+    if (preg_match('#https://monitor\.example\.test/portal/setup-password\?t=[a-f0-9.]{80,}#', (string) ($outbox[0]['text'] ?? ''), $m)) {
+        $setupLink = $m[0];
+        $secrets[] = $setupLink;
+    }
+    check($setupLink !== '' && str_contains($outbox[0]['html'] ?? '', e($setupLink)) && str_contains($outbox[0]['html'] ?? '', 'https://monitor.example.test/portal/login') && !str_contains($outbox[0]['text'] ?? '', 'Temporary password'), 'the real message carries a canonical HTTPS setup link once and no temporary password');
 
     mailer_override(['mail_transport' => 'smtp', 'smtp_host' => 'smtp.example.test', 'smtp_port' => 25, 'smtp_encryption' => 'none', 'mail_from' => 'no-reply@example.test', 'app_url' => 'https://monitor.example.test']);
     $insecure = mailer_status();
@@ -349,33 +350,51 @@ try {
 
     echo "-- escaping (in-process)\n";
     mailer_override(['mail_transport' => 'memory', 'app_url' => 'https://monitor.example.test']);
-    $message = an_compose(['full_name' => '<script>alert(1)</script>', 'username' => 'an.x', 'email' => 'x@example.test'], [['code' => 'PU<1>&"', 'name' => 'Unit "A" & <B>', 'ward' => "Ward 'W'", 'lga' => 'Ohaji/Egbema']], 'account_created', 'p<w>"&\'1234');
-    check(!str_contains($message['html'], '<script>') && str_contains($message['html'], '&lt;script&gt;alert(1)&lt;/script&gt;') && str_contains($message['html'], 'PU&lt;1&gt;&amp;&quot;') && str_contains($message['html'], 'Unit &quot;A&quot; &amp; &lt;B&gt;') && str_contains($message['html'], 'Ward &#039;W&#039;') && str_contains($message['html'], 'p&lt;w&gt;&quot;&amp;&#039;1234'), 'agent names, unit values and the password are escaped in HTML');
+    $evilLink = 'https://monitor.example.test/portal/setup-password?t=aaaaaaaaaaaaaaaaaaaaaaaa.bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+    $message = an_compose(['full_name' => '<script>alert(1)</script>', 'username' => 'an.x', 'email' => 'x@example.test'], [['code' => 'PU<1>&"', 'name' => 'Unit "A" & <B>', 'ward' => "Ward 'W'", 'lga' => 'Ohaji/Egbema']], 'account_created', $evilLink);
+    check(!str_contains($message['html'], '<script>') && str_contains($message['html'], '&lt;script&gt;alert(1)&lt;/script&gt;') && str_contains($message['html'], 'PU&lt;1&gt;&amp;&quot;') && str_contains($message['html'], 'Unit &quot;A&quot; &amp; &lt;B&gt;') && str_contains($message['html'], 'Ward &#039;W&#039;') && str_contains($message['html'], e($evilLink)), 'agent names, unit values and the setup URL are escaped in HTML');
     check(str_contains($message['text'], 'Unit "A" & <B>') && !str_contains($message['text'], '&lt;') && $message['inline'][AN_LOGO_CID]['path'] !== '' && is_file($message['inline'][AN_LOGO_CID]['path']), 'plain text is unescaped and the logo attachment exists');
 
-    echo "-- first sign-in password change\n";
-    $agent = new Client();
-    $signIn = login($agent, 'an.newagent', $agentPass);
-    $dash = $agent->req('agent/dashboard');
-    $api = $agent->req('results/api-status');
-    check($signIn['code'] === 302 && $dash['code'] === 302 && str_contains($dash['location'], 'portal/change-password'), 'temporary password signs in but every page leads to the change-password form');
-    check($api['code'] === 401 && str_contains($api['body'], '"auth_required"'), 'APIs answer 401 so queued offline results stay on the device');
-    $form = $agent->req('portal/change-password');
-    $cTok = token($form['body']);
-    $wrong = $agent->req('portal/change-password', ['csrf_token' => $cTok, 'current_password' => 'wrong-password-123', 'new_password' => 'Brand-new-pass-123', 'new_password_confirm' => 'Brand-new-pass-123']);
-    $short = $agent->req('portal/change-password', ['csrf_token' => $cTok, 'current_password' => $agentPass, 'new_password' => 'short', 'new_password_confirm' => 'short']);
-    $reuse = $agent->req('portal/change-password', ['csrf_token' => $cTok, 'current_password' => $agentPass, 'new_password' => $agentPass, 'new_password_confirm' => $agentPass]);
-    check(str_contains($wrong['body'], 'current password is not correct') && str_contains($short['body'], '12 to 128 characters') && str_contains($reuse['body'], 'different from your current one') && count_where('SELECT must_change_password FROM users WHERE id = :id', ['id' => $newId]) === 1, 'wrong, short and reused passwords are refused');
+    echo "-- password setup link (web)\n";
+    check(login(new Client(), 'an.newagent', 'not-the-password-12345')['code'] === 200, 'agent cannot sign in before completing the setup link');
+    $apiAnon = (new Client())->req('results/api-status');
+    check($apiAnon['code'] === 401 && str_contains($apiAnon['body'], '"auth_required"'), 'APIs answer 401 so queued offline results stay on the device');
+    mailer_override(['mail_transport' => 'memory', 'app_url' => 'http://localhost/election-monitor-app']);
+    $outbox = &mailer_memory_outbox();
+    $outbox = [];
+    db()->prepare("UPDATE agent_notifications SET status = 'failed' WHERE user_id = :id AND kind = 'account_created'")->execute(['id' => $newId]);
+    $reissue = an_retry((string) notes($newId)[0]['notification_id'], $ids['an.admin']);
+    $setupUrl = '';
+    if (preg_match('#http://localhost/election-monitor-app/portal/setup-password\?t=([a-f0-9.]+)#', (string) ($outbox[0]['text'] ?? ''), $m)) {
+        $setupUrl = $m[0];
+        $rawSetupToken = $m[1];
+        $secrets[] = $setupUrl;
+        $secrets[] = $rawSetupToken;
+    } else {
+        $rawSetupToken = '';
+    }
+    check($reissue['ok'] && $setupUrl !== '' && $rawSetupToken !== '', 'retry reissues a setup link for the new agent');
+    $expired = auth_complete_password_setup('deadbeefdeadbeefdeadbeef.' . str_repeat('a', 64), 'Brand-new-pass-123', 'Brand-new-pass-123');
+    check($expired['ok'] === false, 'forged setup tokens are refused');
+    $short = auth_complete_password_setup($rawSetupToken, 'short', 'short');
+    check($short['ok'] === false && ($short['field'] ?? '') === 'new_password', 'short passwords are refused on setup');
     $ownPass = 'Own-' . bin2hex(random_bytes(9));
     $secrets[] = $ownPass;
-    $done = $agent->req('portal/change-password', ['csrf_token' => $cTok, 'current_password' => $agentPass, 'new_password' => $ownPass, 'new_password_confirm' => $ownPass]);
-    $flags = db()->query('SELECT must_change_password, password_changed_at, failed_login_count, locked_at FROM users WHERE id = ' . $newId)->fetch();
-    check($done['code'] === 302 && (int) $flags['must_change_password'] === 0 && $flags['password_changed_at'] !== null && $flags['locked_at'] === null && $agent->req('agent/dashboard')['code'] === 200, 'after choosing a password the agent reaches the dashboard');
-    check(login(new Client(), 'an.newagent', $agentPass)['code'] === 200 && login(new Client(), 'an.newagent', $ownPass)['code'] === 302, 'the emailed temporary password stops working');
-    db()->prepare('UPDATE users SET failed_login_count = 0 WHERE id = :id')->execute(['id' => $newId]);
+    $setupClient = new Client();
+    $form = $setupClient->req('portal/setup-password.php?t=' . rawurlencode($rawSetupToken));
+    $cTok = token($form['body']);
+    check($form['code'] === 200 && str_contains($form['body'], 'an.newagent') && $cTok !== '', 'setup page opens for a valid token without signing the agent in yet');
+    $done = $setupClient->req('portal/setup-password.php', ['csrf_token' => $cTok, 't' => $rawSetupToken, 'new_password' => $ownPass, 'new_password_confirm' => $ownPass]);
+    $flags = db()->query('SELECT must_change_password, password_changed_at, failed_login_count, locked_at, role FROM users WHERE id = ' . $newId)->fetch();
+    $used = db()->query('SELECT used_at FROM password_setup_tokens WHERE user_id = ' . $newId . ' ORDER BY id DESC LIMIT 1')->fetch();
+    check($done['code'] === 302 && str_contains($done['location'], 'setup=1') && (int) $flags['must_change_password'] === 0 && $flags['password_changed_at'] !== null && $flags['locked_at'] === null && $flags['role'] === 'polling_agent' && $used['used_at'] !== null, 'after setup the password is saved, the token is consumed, and the role is unchanged');
+    $reuse = auth_complete_password_setup($rawSetupToken, 'Another-pass-1234', 'Another-pass-1234');
+    check($reuse['ok'] === false, 'setup tokens are single-use');
+    $agent = new Client();
+    check(login($agent, 'an.newagent', $ownPass)['code'] === 302 && $agent->req('agent/dashboard')['code'] === 200, 'after setup the agent signs in and reaches the dashboard');
     db()->prepare("UPDATE agent_notifications SET status = 'failed' WHERE user_id = :id AND kind = 'account_created'")->execute(['id' => $newId]);
-    $after = an_retry((string) notes($newId)[0]['notification_id'], $ids['an.admin'], 'Another-start-123', 'Another-start-123');
-    check(!$after['ok'] && str_contains($after['error'], 'already set their own password') && password_verify($ownPass, (string) db()->query('SELECT password_hash FROM users WHERE id = ' . $newId)->fetchColumn()), 'credentials are not re-sent once the agent has chosen a password');
+    $after = an_retry((string) notes($newId)[0]['notification_id'], $ids['an.admin']);
+    check(!$after['ok'] && str_contains($after['error'], 'already set their own password') && password_verify($ownPass, (string) db()->query('SELECT password_hash FROM users WHERE id = ' . $newId)->fetchColumn()), 'setup links are not re-sent once the agent has chosen a password');
 
     echo "-- no secrets in logs or records\n";
     $log = is_file($logFile) ? (string) file_get_contents($logFile, false, null, $logStart) : '';

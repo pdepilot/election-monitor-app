@@ -26,13 +26,17 @@ if (!is_int($unitId) || $unitId < 1) {
 }
 $unit = $unitId > 0 ? result_unit($unitId) : null;
 if ($unit === null || !result_can_view_unit($user, $unit)) {
-    http_response_code($unit === null ? 404 : 403);
+    // Agents get a uniform 403 so unit IDs are not enumerated by missing vs denied.
+    $hideExistence = $user['role'] === 'polling_agent' || $unit !== null;
+    http_response_code($hideExistence ? 403 : 404);
     render_shell_start('Result', 'results', $user);
     ?>
     <header class="cms-page__header">
         <div>
-            <h1 class="cms-page__title"><?= $unit === null ? 'Result not found' : 'Access denied' ?></h1>
-            <p class="cms-page__subtitle"><?= $unit === null ? 'That polling unit is not in the register.' : 'You can only open results for your assigned polling unit.' ?></p>
+            <h1 class="cms-page__title"><?= $hideExistence ? 'Access denied' : 'Result not found' ?></h1>
+            <p class="cms-page__subtitle"><?= $hideExistence
+                ? 'You can only open results for a polling unit you are authorized to view.'
+                : 'That polling unit is not in the register.' ?></p>
         </div>
     </header>
     <p><a class="cms-btn cms-btn--primary" href="<?= e(url('results/index.php')) ?>">Back to results</a></p>

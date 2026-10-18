@@ -117,13 +117,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $notificationId = null;
                     $withinTransaction = an_schema_ready()
                         ? static function (PDO $pdo, int $agentId) use (&$notificationId, $user): void {
-                            $pdo->prepare('UPDATE users SET must_change_password = 1 WHERE id = :id')->execute(['id' => $agentId]);
                             $notificationId = an_queue($agentId, 'account_created', (int) $user['id'], true);
                         }
                         : null;
                     $result = pu_register_agent($id, $checked['data'], (int) $user['id'], $withinTransaction);
                     if ($result['ok']) {
-                        $notice = an_send_account_email($notificationId, $checked['data']['password']);
+                        $notice = an_send_account_email($notificationId);
                         pu_flash($notice['ok'] ? 'success' : 'warn', 'Polling agent registered and assigned to this unit. ' . $notice['text']);
                         pu_redirect('admin/polling-unit.php?id=' . $id);
                     }
@@ -146,12 +145,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             } elseif ($intent === 'retry_notification') {
                 $mode = 'view';
                 $retry = an_schema_ready()
-                    ? an_retry(
-                        (string) ($_POST['notification_id'] ?? ''),
-                        (int) $user['id'],
-                        isset($_POST['new_password']) ? (string) $_POST['new_password'] : null,
-                        isset($_POST['new_password_confirm']) ? (string) $_POST['new_password_confirm'] : null
-                    )
+                    ? an_retry((string) ($_POST['notification_id'] ?? ''), (int) $user['id'])
                     : ['ok' => false, 'error' => 'Assignment emails are unavailable until the notification migration is applied.'];
                 if ($retry['ok']) {
                     $handed = in_array($retry['status'] ?? '', ['sent', 'captured'], true);
@@ -345,7 +339,7 @@ render_shell_start($title, 'polling-units', $user);
 <article class="cms-card">
     <div class="cms-card__head"><h2 class="cms-card__title">Register a polling agent</h2></div>
     <div class="cms-card__body">
-        <p>This creates an active polling-agent account, assigns it to this unit, and emails the username, this starting password, and the unit details to the email address entered below. The password goes into that one email only; it is stored hashed and is not shown again. The agent must choose a new password at first sign-in.</p>
+        <p>This creates an active polling-agent account, assigns it to this unit, and emails the username, a single-use password-setup link, and the unit details to the address below. No password is chosen here or stored in recoverable form. The link expires and can be used once.</p>
         <?php if (!$mailStatus['ready']): ?>
         <p class="pu-note">Email is not configured in this environment (<?= e(an_error_text($mailStatus['reason'])) ?>). The account will still be created; share the details with the agent another way, or retry the email once it is set up.</p>
         <?php elseif ($mailStatus['transport'] === 'capture'): ?>
@@ -371,18 +365,8 @@ render_shell_start($title, 'polling-units', $user);
                     <input id="agent_email" name="agent_email" type="email" value="<?= e($agentForm['agent_email']) ?>" maxlength="255" required autocomplete="off">
                     <?php if (($errors['agent_email'] ?? '') !== ''): ?><span class="pu-error"><?= e($errors['agent_email']) ?></span><?php endif; ?>
                 </div>
-                <div class="pu-field">
-                    <label for="agent_password">Password</label>
-                    <input id="agent_password" name="agent_password" type="password" minlength="12" maxlength="128" required autocomplete="new-password">
-                    <?php if (($errors['agent_password'] ?? '') !== ''): ?><span class="pu-error"><?= e($errors['agent_password']) ?></span><?php endif; ?>
-                </div>
-                <div class="pu-field">
-                    <label for="agent_password_confirm">Confirm password</label>
-                    <input id="agent_password_confirm" name="agent_password_confirm" type="password" minlength="12" maxlength="128" required autocomplete="new-password">
-                    <?php if (($errors['agent_password_confirm'] ?? '') !== ''): ?><span class="pu-error"><?= e($errors['agent_password_confirm']) ?></span><?php endif; ?>
-                </div>
             </div>
-            <p class="pu-note">Use at least 12 characters. The account can sign in as a polling agent.</p>
+            <p class="pu-note">The agent receives a time-limited setup link by email and chooses their own password (at least 12 characters).</p>
             <div class="pu-form-actions">
                 <button class="cms-btn cms-btn--primary" type="submit">Create and assign</button>
                 <a class="cms-btn cms-btn--ghost" href="<?= e(url('admin/polling-unit.php?id=' . $id)) ?>">Cancel</a>
@@ -477,15 +461,7 @@ render_shell_start($title, 'polling-units', $user);
                                 <input type="hidden" name="id" value="<?= e((string) $id) ?>">
                                 <input type="hidden" name="notification_id" value="<?= e((string) $note['notification_id']) ?>">
                                 <?php if ((int) $note['includes_password'] === 1): ?>
-                                <p class="pu-note">The original password is not stored. Enter a new starting password to send with the retry.</p>
-                                <div class="pu-field">
-                                    <label for="retry_password">New starting password</label>
-                                    <input id="retry_password" name="new_password" type="password" minlength="12" maxlength="128" required autocomplete="new-password">
-                                </div>
-                                <div class="pu-field">
-                                    <label for="retry_password_confirm">Confirm password</label>
-                                    <input id="retry_password_confirm" name="new_password_confirm" type="password" minlength="12" maxlength="128" required autocomplete="new-password">
-                                </div>
+                                <p class="pu-note">Retry issues a new single-use setup link. Previous unused links for this account stop working.</p>
                                 <?php endif; ?>
                                 <button class="cms-btn cms-btn--ghost" type="submit"><?= (string) $note['status'] === 'captured' ? 'Send email now' : 'Retry email' ?></button>
                             </form>

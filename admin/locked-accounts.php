@@ -80,7 +80,7 @@ render_shell_start('Locked accounts', 'locked-accounts', $user);
 <header class="cms-page__header">
     <div>
         <h1 class="cms-page__title">Locked accounts</h1>
-        <p class="cms-page__subtitle">An account is locked after <?= e((string) AUTH_LOCK_AFTER_FAILURES) ?> failed sign-in attempts. It stays locked until it is unlocked here.</p>
+        <p class="cms-page__subtitle">Accounts enter a temporary cool-down after <?= e((string) AUTH_TEMP_LOCK_AFTER) ?> failed passwords and a permanent lock after <?= e((string) AUTH_HARD_LOCK_AFTER) ?> (except the sole super administrator). Permanent locks are cleared here.</p>
     </div>
 </header>
 <?php if ($flash !== null): ?>

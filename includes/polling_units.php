@@ -508,7 +508,7 @@ function pu_agents(): array
 
 /**
  * @param array<string, mixed> $input
- * @return array{errors: array<string, string>, data: array{agent_name: string, agent_username: string, agent_email: string, password: string}}
+ * @return array{errors: array<string, string>, data: array{agent_name: string, agent_username: string, agent_email: string}}
  */
 function pu_validate_agent(array $input): array
 {
@@ -516,8 +516,6 @@ function pu_validate_agent(array $input): array
     $fullName = trim((string) ($input['agent_name'] ?? ''));
     $username = strtolower(trim((string) ($input['agent_username'] ?? '')));
     $email = strtolower(trim((string) ($input['agent_email'] ?? '')));
-    $password = (string) ($input['agent_password'] ?? '');
-    $confirm = (string) ($input['agent_password_confirm'] ?? '');
 
     if ($fullName === '' || strlen($fullName) > 150 || preg_match('/[\x00-\x1F\x7F]/', $fullName)) {
         $errors['agent_name'] = 'Enter the agent’s full name, using 150 characters or fewer.';
@@ -528,11 +526,6 @@ function pu_validate_agent(array $input): array
     if (!filter_var($email, FILTER_VALIDATE_EMAIL) || strlen($email) > 255) {
         $errors['agent_email'] = 'Enter a valid email address.';
     }
-    if (strlen($password) < 12 || strlen($password) > 128) {
-        $errors['agent_password'] = 'Password must be 12 to 128 characters.';
-    } elseif (!hash_equals($password, $confirm)) {
-        $errors['agent_password_confirm'] = 'The passwords do not match.';
-    }
 
     return [
         'errors' => $errors,
@@ -540,13 +533,15 @@ function pu_validate_agent(array $input): array
             'agent_name' => $fullName,
             'agent_username' => $username,
             'agent_email' => $email,
-            'password' => $password,
         ],
     ];
 }
 
 /**
- * @param array{agent_name: string, agent_username: string, agent_email: string, password: string} $data
+ * Creates a polling-agent account with an unusable random password hash.
+ * The agent chooses a real password through a single-use setup link emailed separately.
+ *
+ * @param array{agent_name: string, agent_username: string, agent_email: string} $data
  * @param (callable(PDO, int): void)|null $withinTransaction Runs after the account and assignment are written, before commit.
  * @return array{ok: bool, error: string, agent_id?: int}
  */
@@ -567,7 +562,7 @@ function pu_register_agent(int $unitId, array $data, int $actorId, ?callable $wi
         $insert->execute([
             'username' => $data['agent_username'],
             'email' => $data['agent_email'],
-            'password_hash' => password_hash($data['password'], PASSWORD_DEFAULT),
+            'password_hash' => password_hash(bin2hex(random_bytes(32)), PASSWORD_DEFAULT),
             'full_name' => $data['agent_name'],
             'role' => 'polling_agent',
         ]);

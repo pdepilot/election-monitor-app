@@ -3,10 +3,14 @@ DirectorySlash Off
 RewriteEngine On
 RewriteBase /election-monitor-app/
 
-# Application code, account scripts, and schema files stay off the web.
+# Application code, account scripts, secrets, and repository metadata stay off the web.
 RewriteRule ^(config|includes|scripts|storage|vendor)(/|$) - [F,L]
 RewriteRule ^database/.+\.(php|sql)$ - [F,L]
 RewriteRule ^composer\.(json|lock)$ - [F,L]
+RewriteRule (^|/)\.git(/|$) - [F,L]
+RewriteRule (^|/)\.env - [F,L]
+RewriteRule \.(sql|sqlite|bak|backup|old|dist)$ - [F,L]
+RewriteRule (^|/)(backup|backups|dump|dumps)(/|$) - [F,L]
 
 # A typed or bookmarked .php address is sent to the same path without the extension.
 RewriteCond %{REQUEST_METHOD} ^(GET|HEAD)$

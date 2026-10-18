@@ -126,11 +126,11 @@ function an_find(string $notificationId): ?array
 }
 
 /**
- * Sends one recorded notification. The password, when given, is used for this message only.
+ * Sends one recorded notification. Account emails include a freshly issued setup link (never a password).
  *
  * @return array{status: string, error: ?string, email: string}
  */
-function an_deliver(string $notificationId, ?string $password = null): array
+function an_deliver(string $notificationId): array
 {
     $claim = db()->prepare(
         "UPDATE agent_notifications
@@ -174,9 +174,6 @@ function an_deliver(string $notificationId, ?string $password = null): array
     if ((string) $row['role'] !== 'polling_agent' || (int) $row['is_active'] !== 1) {
         return $finish('failed', 'account_inactive', null, []);
     }
-    if ((int) $row['includes_password'] === 1 && ($password === null || $password === '')) {
-        return $finish('failed', 'password_required', null, []);
-    }
     if (!filter_var($email, FILTER_VALIDATE_EMAIL) || strlen($email) > 255) {
         return $finish('failed', 'invalid_recipient', null, []);
     }
@@ -185,9 +182,23 @@ function an_deliver(string $notificationId, ?string $password = null): array
         return $finish('not_configured', $status['reason'], $status['transport'], []);
     }
 
+    $setupUrl = null;
+    if ((int) $row['includes_password'] === 1) {
+        if ($row['password_changed_at'] !== null) {
+            return $finish('failed', 'password_already_set', null, []);
+        }
+        if (!auth_password_setup_schema_ready()) {
+            return $finish('failed', 'setup_unavailable', null, []);
+        }
+        $setupUrl = auth_issue_password_setup_link((int) $row['user_id']);
+        if ($setupUrl === null) {
+            return $finish('failed', 'setup_unavailable', null, []);
+        }
+    }
+
     $units = an_units((int) $row['user_id']);
     $agent = ['full_name' => (string) $row['full_name'], 'username' => (string) $row['username'], 'email' => $email];
-    $message = an_compose($agent, $units, (string) $row['kind'], (int) $row['includes_password'] === 1 ? $password : null);
+    $message = an_compose($agent, $units, (string) $row['kind'], $setupUrl);
     $result = mailer_send($message);
 
     return $finish($result['status'], $result['error'], $result['transport'], $units);
@@ -219,12 +230,12 @@ function an_audit(array $row, string $status, ?string $error, ?string $transport
 }
 
 /**
- * A failed or unconfigured email can be retried. An account email needs a new password because
- * the original one is not kept; this resets the hash and never creates a second account.
+ * A failed or unconfigured email can be retried. Account emails issue a new setup link;
+ * they never create a second account or change role/assignment.
  *
  * @return array{ok: bool, error: string, status?: string, email?: string, detail?: ?string}
  */
-function an_retry(string $notificationId, int $actorId, ?string $newPassword = null, ?string $confirm = null): array
+function an_retry(string $notificationId, int $actorId): array
 {
     if (!preg_match('/\A[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\z/', $notificationId)) {
         return ['ok' => false, 'error' => 'That notification was not found.'];
@@ -237,45 +248,14 @@ function an_retry(string $notificationId, int $actorId, ?string $newPassword = n
         return ['ok' => false, 'error' => 'This email is not waiting for a retry.'];
     }
 
-    $password = null;
-    if ((int) $row['includes_password'] === 1) {
-        if ($row['password_changed_at'] !== null) {
-            return ['ok' => false, 'error' => 'The agent has already set their own password, so account details are not sent again.'];
-        }
-        $password = (string) $newPassword;
-        if (strlen($password) < 12 || strlen($password) > 128) {
-            return ['ok' => false, 'error' => 'Enter a new password of 12 to 128 characters. The original password is not stored, so it cannot be re-sent.'];
-        }
-        if (!hash_equals($password, (string) $confirm)) {
-            return ['ok' => false, 'error' => 'The passwords do not match.'];
-        }
-        $pdo = db();
-        $pdo->beginTransaction();
-        try {
-            $update = $pdo->prepare(
-                'UPDATE users SET password_hash = :hash, must_change_password = 1
-                 WHERE id = :id AND role = \'polling_agent\' AND password_changed_at IS NULL'
-            );
-            $update->execute(['hash' => password_hash($password, PASSWORD_DEFAULT), 'id' => (int) $row['user_id']]);
-            if ($update->rowCount() !== 1) {
-                $pdo->rollBack();
-
-                return ['ok' => false, 'error' => 'The agent account could not be updated.'];
-            }
-            $pdo->prepare('DELETE FROM remember_tokens WHERE user_id = :id')->execute(['id' => (int) $row['user_id']]);
-            auth_audit($actorId, 'reset_agent_password', (int) $row['user_id'], 'New starting password set for ' . $row['username'] . ' to retry the account email.');
-            $pdo->commit();
-        } catch (Throwable $exception) {
-            if ($pdo->inTransaction()) {
-                $pdo->rollBack();
-            }
-            throw $exception;
-        }
+    if ((int) $row['includes_password'] === 1 && $row['password_changed_at'] !== null) {
+        return ['ok' => false, 'error' => 'The agent has already set their own password, so account details are not sent again.'];
     }
 
     $touch = db()->prepare('UPDATE agent_notifications SET created_by = :actor WHERE notification_id = :id');
     $touch->execute(['actor' => $actorId, 'id' => $notificationId]);
-    $result = an_deliver($notificationId, $password);
+    auth_audit($actorId, 'retry_agent_email', (int) $row['user_id'], 'Retrying ' . $row['kind'] . ' email for ' . $row['username'] . '.');
+    $result = an_deliver($notificationId);
 
     return ['ok' => true, 'error' => '', 'status' => $result['status'], 'email' => $result['email'], 'detail' => $result['error']];
 }
@@ -311,6 +291,8 @@ function an_error_text(?string $error): string
         'tls_failed' => 'a secure connection to the mail server could not be made',
         'account_inactive' => 'the agent account is inactive',
         'password_required' => 'a new starting password is needed',
+        'password_already_set' => 'the agent has already chosen a password',
+        'setup_unavailable' => 'password-setup links are unavailable until the migration is applied and app_url is configured',
         'logo_missing' => 'the email logo file is missing',
         'capture_unwritable' => 'the local capture folder is not writable',
         'disabled' => 'email is turned off in this environment',
@@ -372,17 +354,17 @@ function an_notify_assignment_change(array $userIds, int $actorId): array
 
 /**
  * Records and sends the account email for a newly registered agent.
- * The password is passed through to this one message and is not stored.
+ * Issues a single-use password-setup link; no password is emailed or stored in recoverable form.
  *
  * @return array{ok: bool, text: string}
  */
-function an_send_account_email(?string $notificationId, string $password): array
+function an_send_account_email(?string $notificationId): array
 {
     if ($notificationId === null) {
         return ['ok' => false, 'text' => 'Assignment emails are unavailable until the notification migration is applied.'];
     }
     try {
-        $result = an_deliver($notificationId, $password);
+        $result = an_deliver($notificationId);
 
         return [
             'ok' => in_array($result['status'], ['sent', 'captured'], true),
@@ -398,9 +380,10 @@ function an_send_account_email(?string $notificationId, string $password): array
 /**
  * @param array{full_name: string, username: string, email: string} $agent
  * @param list<array{code: string, name: string, ward: string, lga: string}> $units
+ * @param ?string $setupUrl Canonical HTTPS (or localhost) password-setup URL for account emails
  * @return array{to_email: string, to_name: string, subject: string, html: string, text: string, inline: array<string, array{path: string, mime: string, name: string}>, redact: list<string>}
  */
-function an_compose(array $agent, array $units, string $kind, ?string $password): array
+function an_compose(array $agent, array $units, string $kind, ?string $setupUrl = null): array
 {
     $account = $kind === 'account_created';
     $subject = $account ? 'Your Polling Agent Assignment and Account Details' : 'Your Polling Agent Assignment Has Been Updated';
@@ -417,18 +400,18 @@ function an_compose(array $agent, array $units, string $kind, ?string $password)
     }
     $steps = $account
         ? [
-            'Open the portal sign-in page: ' . $loginUrl,
-            'Sign in with your username and the temporary password in this email.',
-            'You will be asked to choose a new password straight away (at least 12 characters). The temporary password stops working once you change it.',
+            'Open the password-setup link in this email (it works once and expires).',
+            'Choose your own password of at least 12 characters. This does not change your role or polling-unit assignment.',
+            'Sign in at ' . $loginUrl . ' with your username and the password you chose.',
             'Open your polling unit from the dashboard to record and submit results.',
         ]
         : [
             'Sign in at ' . $loginUrl . ' with your username and your own password.',
             'Your dashboard lists only the polling units shown in this email.',
         ];
-    $reminder = 'Never share your username or password with anyone, including other agents or coordinators. Administrators will never ask you for your password. If you did not expect this email, contact your coordinator.';
+    $reminder = 'Never share your username, password, or setup link with anyone, including other agents or coordinators. Administrators will never ask you for your password. If you did not expect this email, contact your coordinator.';
     if ($account) {
-        $reminder .= ' Delete this email after you have changed your password.';
+        $reminder .= ' Delete this email after you have set your password. Do not forward the setup link.';
     }
 
     $font = "font-family:Arial,Helvetica,sans-serif;";
@@ -457,9 +440,12 @@ function an_compose(array $agent, array $units, string $kind, ?string $password)
         . '<p style="' . $font . 'margin:0 0 6px;font-size:13px;font-weight:bold;text-transform:uppercase;letter-spacing:0.6px;color:#1d6b45;">Your sign-in details</p>'
         . '<table role="presentation" cellpadding="0" cellspacing="0" border="0">'
         . $row('Username', $agent['username'], true)
-        . ($account && $password !== null ? $row('Temporary password', $password, true) : '')
         . $row('Portal', $loginUrl)
         . '</table>'
+        . ($account && $setupUrl !== null
+            ? '<p style="' . $font . 'margin:12px 0 0;font-size:14px;color:#1f2933;">Use this one-time link to choose your password (expires; do not forward):</p>'
+                . '<p style="' . $font . 'margin:8px 0 0;font-size:14px;word-break:break-all;"><a href="' . e($setupUrl) . '" rel="noreferrer noopener" style="color:#1d6b45;font-weight:bold;">' . e($setupUrl) . '</a></p>'
+            : '')
         . ($account ? '' : '<p style="' . $font . 'margin:8px 0 0;font-size:13px;color:#52606d;">Your password has not changed and is not included in this email.</p>')
         . '</td></tr></table></td></tr>';
 
@@ -479,11 +465,13 @@ function an_compose(array $agent, array $units, string $kind, ?string $password)
             . '</table></td></tr></table></td></tr>';
     }
 
+    $ctaUrl = $account && $setupUrl !== null ? $setupUrl : $loginUrl;
+    $ctaLabel = $account && $setupUrl !== null ? 'Choose your password' : 'Sign in to the portal';
     $html .= '<tr><td align="center" style="padding:18px 28px 6px;">'
         . '<table role="presentation" cellpadding="0" cellspacing="0" border="0"><tr><td align="center" style="background-color:#1d6b45;border-radius:6px;">'
-        . '<a href="' . e($loginUrl) . '" style="' . $font . 'display:inline-block;padding:12px 26px;font-size:15px;font-weight:bold;color:#ffffff;text-decoration:none;">Sign in to the portal</a>'
+        . '<a href="' . e($ctaUrl) . '" rel="noreferrer noopener" style="' . $font . 'display:inline-block;padding:12px 26px;font-size:15px;font-weight:bold;color:#ffffff;text-decoration:none;">' . e($ctaLabel) . '</a>'
         . '</td></tr></table>'
-        . '<p style="' . $font . 'margin:10px 0 0;font-size:12px;color:#52606d;word-break:break-all;">' . e($loginUrl) . '</p>'
+        . '<p style="' . $font . 'margin:10px 0 0;font-size:12px;color:#52606d;word-break:break-all;">' . e($ctaUrl) . '</p>'
         . '</td></tr>';
 
     $html .= '<tr><td style="' . $font . 'padding:16px 28px 0;font-size:15px;line-height:1.6;color:#1f2933;">'
@@ -514,8 +502,8 @@ function an_compose(array $agent, array $units, string $kind, ?string $password)
     $text[] = '';
     $text[] = 'YOUR SIGN-IN DETAILS';
     $text[] = 'Username: ' . an_plain($agent['username']);
-    if ($account && $password !== null) {
-        $text[] = 'Temporary password: ' . $password;
+    if ($account && $setupUrl !== null) {
+        $text[] = 'Password setup link (one-time, expires): ' . $setupUrl;
     } else {
         $text[] = 'Your password has not changed and is not included in this email.';
     }
@@ -550,7 +538,7 @@ function an_compose(array $agent, array $units, string $kind, ?string $password)
         'html' => $html,
         'text' => implode("\n", $text) . "\n",
         'inline' => [AN_LOGO_CID => ['path' => dirname(__DIR__) . '/' . AN_LOGO_FILE, 'mime' => AN_LOGO_MIME, 'name' => basename(AN_LOGO_FILE)]],
-        'redact' => $password !== null ? [$password, e($password)] : [],
+        'redact' => $setupUrl !== null ? [$setupUrl, e($setupUrl)] : [],
     ];
 }
 

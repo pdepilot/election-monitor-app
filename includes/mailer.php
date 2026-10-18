@@ -10,7 +10,7 @@ const MAILER_TRANSPORTS = ['disabled', 'capture', 'smtp'];
 const MAILER_TIMEOUT_SECONDS = 15;
 const MAILER_CONNECT_ATTEMPTS = 2;
 const MAILER_RECONNECT_DELAY_SECONDS = 2;
-const MAILER_CAPTURE_PLACEHOLDER = '[password withheld from the local capture copy]';
+const MAILER_CAPTURE_PLACEHOLDER = '[secret withheld from the local capture copy]';
 
 function mailer_library_ready(): bool
 {

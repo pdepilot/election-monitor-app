@@ -146,7 +146,7 @@ function render_shell_start(string $title, string $activeNav, array $user): void
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.5.2/css/all.min.css">
     <style nonce="<?= e(app_csp_nonce()) ?>"><?= dashboard_css() ?></style>
 </head>
-<body class="cms-app<?= $mode === 'dark' ? ' dark' : '' ?>" data-page="<?= e($activeNav) ?>" data-theme="<?= e($theme) ?>" data-mode="<?= e($mode) ?>" data-cookie-path="<?= e(app_cookie_path()) ?>"<?php if (auth_is_idle_role($user['role'])): ?> data-idle-seconds="<?= (int) AUTH_ADMIN_IDLE_SECONDS ?>" data-idle-logout="<?= e(url('portal/logout.php')) ?>" data-csrf-token="<?= e(csrf_token()) ?>"<?php endif; ?>>
+<body class="cms-app<?= $mode === 'dark' ? ' dark' : '' ?>" data-page="<?= e($activeNav) ?>" data-theme="<?= e($theme) ?>" data-mode="<?= e($mode) ?>" data-cookie-path="<?= e(app_cookie_path()) ?>" data-user-id="<?= (int) $user['id'] ?>"<?php if (auth_is_idle_role($user['role'])): ?> data-idle-seconds="<?= (int) auth_idle_seconds_for($user['role']) ?>" data-idle-logout="<?= e(url('portal/logout.php')) ?>" data-csrf-token="<?= e(csrf_token()) ?>"<?php endif; ?>>
     <div class="cms-sidebar-overlay" id="cmsSidebarOverlay" hidden></div>
     <div class="cms-layout">
         <aside class="cms-sidebar" id="cmsSidebar" aria-label="Main navigation">
@@ -325,12 +325,20 @@ function render_shell_start(string $title, string $activeNav, array $user): void
 
 function render_shell_end(): void
 {
+    $user = auth_user();
+    $agentOffline = is_array($user) && ($user['role'] ?? '') === 'polling_agent';
     ?>
             </main>
             <p class="cms-page__footnote">Access is restricted to authorized personnel.</p>
         </div>
     </div>
     <script nonce="<?= e(app_csp_nonce()) ?>"><?= dashboard_js() ?></script>
+    <?php if ($agentOffline): ?>
+    <?php if (strpos((string) ($GLOBALS['em_offline_store_loaded'] ?? ''), '1') !== 0): ?>
+    <script nonce="<?= e(app_csp_nonce()) ?>" src="<?= e(asset_url('assets/js/offline-store.js')) ?>"></script>
+    <?php endif; ?>
+    <script nonce="<?= e(app_csp_nonce()) ?>" src="<?= e(asset_url('assets/js/offline-logout.js')) ?>"></script>
+    <?php endif; ?>
 </body>
 </html>
     <?php

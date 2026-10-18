@@ -20,7 +20,15 @@ if (
     && isset($_GET['idle'])
     && (string) $_GET['idle'] === '1'
 ) {
-    $error = 'You were signed out after 10 minutes of inactivity. Sign in again to continue.';
+    $error = 'You were signed out after a period of inactivity. Sign in again to continue.';
+}
+$setupNotice = '';
+if (
+    $_SERVER['REQUEST_METHOD'] !== 'POST'
+    && isset($_GET['setup'])
+    && (string) $_GET['setup'] === '1'
+) {
+    $setupNotice = 'Your password is set. Sign in with your username and the password you chose.';
 }
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
@@ -306,6 +314,9 @@ $slides = [
                 <?php portal_mark_svg(52); ?>
                 <h2 id="signin-heading">Sign in</h2>
                 <p class="login-lead">Use the username or email issued to you.</p>
+                <?php if ($setupNotice !== '' && $error === ''): ?>
+                    <div class="login-alert" role="status"><?= e($setupNotice) ?></div>
+                <?php endif; ?>
                 <?php if ($error !== ''): ?>
                     <div class="login-alert" id="login-error" role="alert" tabindex="-1"><?= e($error) ?></div>
                 <?php endif; ?>

@@ -64,6 +64,14 @@ function sheet_utc_now(): string
 
 function sheet_private_dir(): string
 {
+    $problems = function_exists('app_storage_path_problems') ? app_storage_path_problems() : [];
+    if ($problems !== []) {
+        foreach ($problems as $problem) {
+            error_log('Result-sheet storage misconfiguration: ' . $problem);
+        }
+        throw new RuntimeException('Private result-sheet storage is misconfigured.');
+    }
+
     return app_config()['private_dir'];
 }
 
@@ -115,9 +123,18 @@ function sheet_keys(bool $reload = false): array
     }
     $cache = ['current' => null, 'keys' => [], 'error' => ''];
     $file = app_config()['sheet_key_file'];
+    $pathProblems = function_exists('app_storage_path_problems') ? app_storage_path_problems() : [];
+    foreach ($pathProblems as $problem) {
+        if (str_contains($problem, 'sheet_key_file')) {
+            $cache['error'] = 'unsafe_location';
+            error_log('Result-sheet integrity key file is in an unsafe location: ' . $problem);
+
+            return $cache;
+        }
+    }
     if (!is_file($file) || !is_readable($file)) {
         $cache['error'] = 'missing';
-        error_log('Result-sheet integrity key file is missing or unreadable.');
+        error_log('Result-sheet integrity key file is missing or unreadable. High-risk sheet operations are blocked until a key is configured outside the web root.');
 
         return $cache;
     }

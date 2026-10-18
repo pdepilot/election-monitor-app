@@ -58,14 +58,15 @@ function submission_utc_now(): string
 }
 
 /**
- * Sliding-window limit kept in the session (the API requires a signed-in session).
+ * Sliding-window limit kept in the session, keyed by bucket and authenticated user id
+ * so opening a new session does not reset the account's budget.
  * Returns the seconds to wait, or null when the request may proceed.
  */
-function submission_rate_limited(string $bucket): ?int
+function submission_rate_limited(string $bucket, int $userId = 0): ?int
 {
     [$max, $window] = SUBMISSION_RATE_LIMITS[$bucket];
     $now = time();
-    $key = 'api_rate_' . $bucket;
+    $key = 'api_rate_' . $bucket . '_' . max(0, $userId);
     $hits = array_values(array_filter(
         is_array($_SESSION[$key] ?? null) ? $_SESSION[$key] : [],
         static fn ($t): bool => is_int($t) && $t > $now - $window
@@ -107,7 +108,7 @@ function submission_require_agent(string $bucket, bool $checkCsrf): array
             submission_error(403, 'csrf_invalid', 'The security token expired. The device will fetch a new one and retry.');
         }
     }
-    $wait = submission_rate_limited($bucket);
+    $wait = submission_rate_limited($bucket, (int) $user['id']);
     if ($wait !== null) {
         submission_error(429, 'rate_limited', 'Too many requests. The device will retry shortly.', ['retry_after' => $wait], ['Retry-After' => (string) $wait]);
     }

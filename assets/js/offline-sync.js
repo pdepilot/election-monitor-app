@@ -275,27 +275,15 @@
         });
     }
 
+    // Logout meta cleanup lives in offline-logout.js (loaded on every agent shell page).
     var signingOut = false;
     var copyWrite = Promise.resolve();
     document.addEventListener('submit', function (event) {
         var form = event.target;
-        if (signingOut || !form || !/\/portal\/logout(\.php)?$/.test(new URL(form.action, window.location.href).pathname)) {
+        if (!form || !/\/portal\/logout(\.php)?$/.test(new URL(form.action, window.location.href).pathname)) {
             return;
         }
-        event.preventDefault();
         signingOut = true;
-        // A status refresh still in flight must not write the copy back after it is cleared.
-        var cleared = copyWrite.then(function () {
-            return Promise.all([store.deleteMeta('units:' + userId), store.deleteMeta('agent')]);
-        });
-        var limit = new Promise(function (resolve) {
-            window.setTimeout(resolve, 3000);
-        });
-        Promise.race([cleared, limit]).catch(function () {
-            return null;
-        }).then(function () {
-            form.submit();
-        });
     }, true);
 
     /* ---------- one item ---------- */

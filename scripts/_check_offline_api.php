@@ -96,9 +96,16 @@ function n(string $sql, array $params = []): int
 
 $max = static fn (string $table): int => (int) db()->query('SELECT COALESCE(MAX(id), 0) FROM ' . $table)->fetchColumn();
 $start = [];
-foreach (['polling_unit_results', 'result_submissions', 'audit_log', 'candidates', 'result_reviews', 'result_discrepancies'] as $table) {
+foreach (['polling_unit_results', 'result_submissions', 'audit_log', 'candidates', 'result_reviews', 'result_discrepancies', 'login_attempts'] as $table) {
     $start[$table] = $max($table);
 }
+$assignmentFingerprint = static function (): string {
+    return hash('sha256', (string) db()->query(
+        'SELECT GROUP_CONCAT(CONCAT(id, ":", IFNULL(agent_user_id, "n"), ":", is_active) ORDER BY id SEPARATOR ",") FROM polling_units'
+    )->fetchColumn());
+};
+$unitCountBefore = (int) db()->query('SELECT COUNT(*) FROM polling_units')->fetchColumn();
+$fingerprintBefore = $assignmentFingerprint();
 $users = ['oa.agenta' => 'polling_agent', 'oa.agentb' => 'polling_agent', 'oa.agentc' => 'polling_agent', 'oa.admin' => 'admin', 'oa.viewer' => 'viewer'];
 $pass = [];
 $ids = [];
@@ -119,6 +126,9 @@ try {
     }
     [$cA, $cB] = $cands;
     $units = db()->query('SELECT id, unit_code, is_active, agent_user_id, updated_at FROM polling_units WHERE is_active = 1 AND agent_user_id IS NULL ORDER BY id DESC LIMIT 3')->fetchAll();
+    if (count($units) < 3) {
+        throw new RuntimeException('Need three active, unassigned polling units to borrow for the offline API suite.');
+    }
     foreach ($units as $unit) {
         $unitBackup[(int) $unit['id']] = $unit;
     }
@@ -286,15 +296,53 @@ try {
     db()->exec('DELETE FROM result_reviews WHERE id > ' . $start['result_reviews']);
     db()->exec('DELETE FROM polling_unit_results WHERE id > ' . $start['polling_unit_results']);
     db()->exec('DELETE FROM audit_log WHERE id > ' . $start['audit_log']);
+    db()->exec('DELETE FROM login_attempts WHERE id > ' . $start['login_attempts']);
     db()->exec('DELETE FROM candidates WHERE id > ' . $start['candidates'] . " AND party IN ('TSTA', 'TSTB')");
+    // Restore only the units this suite borrowed, including any pre-existing agent_user_id (normally NULL).
     foreach ($unitBackup as $id => $unit) {
-        db()->prepare('UPDATE polling_units SET agent_user_id = NULL, is_active = :active, updated_at = :updated WHERE id = :id')
-            ->execute(['active' => (int) $unit['is_active'], 'updated' => $unit['updated_at'], 'id' => $id]);
+        db()->prepare(
+            'UPDATE polling_units SET agent_user_id = :agent, is_active = :active, updated_at = :updated WHERE id = :id'
+        )->execute([
+            'agent' => $unit['agent_user_id'],
+            'active' => (int) $unit['is_active'],
+            'updated' => $unit['updated_at'],
+            'id' => $id,
+        ]);
     }
     if ($ids !== []) {
-        db()->exec('DELETE FROM users WHERE id IN (' . implode(',', array_map('intval', $ids)) . ')');
+        $idList = implode(',', array_map('intval', $ids));
+        db()->exec('DELETE FROM remember_tokens WHERE user_id IN (' . $idList . ')');
+        try {
+            db()->exec('DELETE FROM password_setup_tokens WHERE user_id IN (' . $idList . ')');
+        } catch (Throwable $e) {
+            // Table exists only after the password-setup migration.
+        }
+        db()->exec('DELETE FROM users WHERE id IN (' . $idList . ") AND username LIKE 'oa.%'");
     }
-    check(n("SELECT COUNT(*) FROM users WHERE username LIKE 'oa.%'") === 0 && n('SELECT COUNT(*) FROM polling_unit_results') === 0 && n('SELECT COUNT(*) FROM result_submissions') === 0 && n('SELECT COUNT(*) FROM polling_units WHERE agent_user_id IS NOT NULL') === 0, 'fixtures removed and polling units restored');
+    $borrowedRestored = true;
+    foreach ($unitBackup as $id => $unit) {
+        $now = db()->query('SELECT agent_user_id, is_active, updated_at FROM polling_units WHERE id = ' . (int) $id)->fetch();
+        if (
+            !is_array($now)
+            || (string) ($now['agent_user_id'] ?? '') !== (string) ($unit['agent_user_id'] ?? '')
+            || (int) $now['is_active'] !== (int) $unit['is_active']
+            || (string) $now['updated_at'] !== (string) $unit['updated_at']
+        ) {
+            $borrowedRestored = false;
+        }
+    }
+    $unitCountAfter = (int) db()->query('SELECT COUNT(*) FROM polling_units')->fetchColumn();
+    $fingerprintAfter = $assignmentFingerprint();
+    check(
+        n("SELECT COUNT(*) FROM users WHERE username LIKE 'oa.%'") === 0
+        && n('SELECT COUNT(*) FROM polling_unit_results WHERE id > :s', ['s' => $start['polling_unit_results']]) === 0
+        && n('SELECT COUNT(*) FROM result_submissions WHERE id > :s', ['s' => $start['result_submissions']]) === 0
+        && n('SELECT COUNT(*) FROM candidates WHERE id > :s AND party IN (\'TSTA\', \'TSTB\')', ['s' => $start['candidates']]) === 0
+        && $borrowedRestored
+        && $unitCountAfter === $unitCountBefore
+        && $fingerprintAfter === $fingerprintBefore,
+        'fixtures removed; borrowed units restored; other assignments and unit count unchanged'
+    );
 }
 
 echo $failures === 0 ? 'ALL PASS' . PHP_EOL : 'FAILURES ' . $failures . PHP_EOL;
