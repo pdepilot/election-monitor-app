@@ -80,6 +80,9 @@ function sheet_can_upload(array $user, array $unit): bool
     if ((int) ($unit['is_active'] ?? 0) !== 1) {
         return false;
     }
+    if (!scope_can_unit($user, $unit)) {
+        return false;
+    }
     if (in_array($user['role'], SHEET_READERS, true)) {
         return true;
     }
@@ -93,20 +96,18 @@ function sheet_can_upload(array $user, array $unit): bool
  */
 function sheet_can_view(array $user, array $upload): bool
 {
+    $unit = result_unit((int) $upload['polling_unit_id']);
+    if (!is_array($unit) || !scope_can_unit($user, $unit)) {
+        return false;
+    }
     if ((int) ($upload['is_active'] ?? 0) !== 1 && !in_array($user['role'], SHEET_READERS, true)) {
         return false;
     }
-    if (in_array($user['role'], SHEET_READERS, true)) {
+    if (in_array($user['role'], RESULT_VIEWERS, true)) {
         return true;
     }
-    if ($user['role'] !== 'polling_agent') {
-        return false;
-    }
-    $unit = result_unit((int) $upload['polling_unit_id']);
 
-    return is_array($unit)
-        && (int) ($unit['is_active'] ?? 0) === 1
-        && (int) ($unit['agent_user_id'] ?? 0) === (int) $user['id'];
+    return false;
 }
 
 /**

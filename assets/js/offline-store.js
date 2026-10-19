@@ -1,15 +1,15 @@
 /*
- * Device storage for offline result submission (IndexedDB "em-offline").
+ * Device storage for offline result submission and result-sheet uploads (IndexedDB "em-offline").
  *
- * Holds only result figures and their sync bookkeeping. Never store passwords, cookies,
- * CSRF tokens, or any other secret here. A save is reported only after the IndexedDB
+ * Holds result figures, queued sheet file bytes, and sync bookkeeping. Never store passwords,
+ * cookies, CSRF tokens, or any other secret here. A save is reported only after the IndexedDB
  * transaction commits; nothing in this file claims that the server received anything.
  */
 (function () {
     'use strict';
 
     var DB_NAME = 'em-offline';
-    var DB_VERSION = 1;
+    var DB_VERSION = 2;
     var SCHEMA_VERSION = 1;
     var ACTIVE_STATES = ['pending', 'sending', 'received'];
 
@@ -67,6 +67,11 @@
                 }
                 if (!db.objectStoreNames.contains('meta')) {
                     db.createObjectStore('meta', { keyPath: 'key' });
+                }
+                if (!db.objectStoreNames.contains('sheet_uploads')) {
+                    var sheets = db.createObjectStore('sheet_uploads', { keyPath: 'client_upload_id' });
+                    sheets.createIndex('by_user', 'user_id');
+                    sheets.createIndex('by_user_unit', ['user_id', 'polling_unit_id']);
                 }
             };
             request.onblocked = function () {
@@ -452,6 +457,124 @@
         });
     }
 
+    /*
+     * Queues a result-sheet file (Blob) for later upload. Does not create a numerical submission.
+     * Multiple pending sheets for one unit are allowed (versions); each has its own client_upload_id.
+     */
+    function queueSheetUpload(input) {
+        var now = Date.now();
+        if (!(input.blob instanceof Blob) || input.blob.size < 1) {
+            return Promise.reject(new StoreError('unknown', 'Choose a result sheet photo or PDF before saving.'));
+        }
+        var record = {
+            client_upload_id: newSubmissionId(),
+            schema_version: SCHEMA_VERSION,
+            user_id: input.user_id,
+            polling_unit_id: input.polling_unit_id,
+            unit_code: input.unit_code || '',
+            upload_kind: input.upload_kind || '',
+            upload_reason: input.upload_reason || '',
+            original_name: input.original_name || 'result-sheet',
+            mime: input.mime || input.blob.type || 'application/octet-stream',
+            byte_size: input.blob.size,
+            blob: input.blob,
+            client_created_at: new Date(now).toISOString(),
+            created_ms: now,
+            updated_ms: now,
+            state: 'pending',
+            attempts: 0,
+            next_attempt_ms: 0,
+            last_error: null,
+            server: null,
+            item_type: 'sheet'
+        };
+        return run(['sheet_uploads'], 'readwrite', function (stores, tx, done) {
+            stores.sheet_uploads.add(record);
+            done(record);
+        }, 'strict');
+    }
+
+    function listSheetUploads(userId, unitId) {
+        return run(['sheet_uploads'], 'readonly', function (stores, tx, done) {
+            var request = unitId
+                ? stores.sheet_uploads.index('by_user_unit').getAll(IDBKeyRange.only([userId, unitId]))
+                : stores.sheet_uploads.index('by_user').getAll(IDBKeyRange.only(userId));
+            request.onsuccess = function () {
+                done(request.result.sort(function (a, b) {
+                    return b.created_ms - a.created_ms;
+                }));
+            };
+        });
+    }
+
+    function updateSheetUpload(clientUploadId, mutate) {
+        return run(['sheet_uploads'], 'readwrite', function (stores, tx, done, refuse) {
+            var request = stores.sheet_uploads.get(clientUploadId);
+            request.onsuccess = guarded(refuse, function () {
+                var record = request.result;
+                if (!record || mutate(record) === false) {
+                    done(record || null);
+                    return;
+                }
+                record.updated_ms = Date.now();
+                stores.sheet_uploads.put(record);
+                done(record);
+            });
+        }, 'strict');
+    }
+
+    function updateAllSheets(userId, mutate) {
+        return run(['sheet_uploads'], 'readwrite', function (stores, tx, done, refuse) {
+            var changed = [];
+            var request = stores.sheet_uploads.index('by_user').openCursor(IDBKeyRange.only(userId));
+            request.onsuccess = guarded(refuse, function () {
+                var cursor = request.result;
+                if (!cursor) {
+                    done(changed);
+                    return;
+                }
+                var record = cursor.value;
+                if (mutate(record) !== false) {
+                    record.updated_ms = Date.now();
+                    cursor.update(record);
+                    changed.push(record);
+                }
+                cursor.continue();
+            });
+        }, 'strict');
+    }
+
+    function resetAbandonedSheets(userId) {
+        return updateAllSheets(userId, function (record) {
+            if (record.state !== 'sending') {
+                return false;
+            }
+            record.state = 'pending';
+            record.sending_owner = null;
+            record.next_attempt_ms = 0;
+        });
+    }
+
+    function clearSheetBackoff(userId) {
+        return updateAllSheets(userId, function (record) {
+            if (record.state !== 'pending' || !record.next_attempt_ms) {
+                return false;
+            }
+            record.next_attempt_ms = 0;
+        });
+    }
+
+    function retrySheetUpload(clientUploadId) {
+        return updateSheetUpload(clientUploadId, function (record) {
+            if (record.state !== 'needs_attention' && record.state !== 'pending') {
+                return false;
+            }
+            record.state = 'pending';
+            record.next_attempt_ms = 0;
+            record.last_error = null;
+        });
+    }
+
     window.EmOfflineStore = {
         SCHEMA_VERSION: SCHEMA_VERSION,
         ACTIVE_STATES: ACTIVE_STATES,
@@ -465,6 +588,13 @@
         resetAbandoned: resetAbandoned,
         clearBackoff: clearBackoff,
         retrySubmission: retrySubmission,
+        queueSheetUpload: queueSheetUpload,
+        listSheetUploads: listSheetUploads,
+        updateSheetUpload: updateSheetUpload,
+        updateAllSheets: updateAllSheets,
+        resetAbandonedSheets: resetAbandonedSheets,
+        clearSheetBackoff: clearSheetBackoff,
+        retrySheetUpload: retrySheetUpload,
         acquireLease: acquireLease,
         releaseLease: releaseLease,
         getDraft: getDraft,

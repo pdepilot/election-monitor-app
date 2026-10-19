@@ -225,6 +225,12 @@ function render_shell_start(string $title, string $activeNav, array $user): void
                                 <span>Locked accounts</span>
                             </a>
                         </li>
+                        <li class="cms-nav-item<?= $activeNav === 'user-scopes' ? ' is-active' : '' ?>">
+                            <a href="<?= e(url('admin/user-scopes.php')) ?>">
+                                <i class="fas fa-map-location-dot cms-nav-item__icon" aria-hidden="true"></i>
+                                <span>User scopes</span>
+                            </a>
+                        </li>
                         <?php endif; ?>
                     </ul>
                 </div>

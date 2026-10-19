@@ -128,7 +128,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && (string) ($_POST['intent'] ?? '') =
 }
 
 $flash = result_take_flash();
-$offlineAgent = $user['role'] === 'polling_agent' && $candidates !== [] && submission_schema_ready();
+$offlineAgent = $user['role'] === 'polling_agent' && submission_schema_ready();
+$offlineFigures = $offlineAgent && $candidates !== [];
+$offlineSheet = $user['role'] === 'polling_agent' && $canUpload && sheet_schema_ready();
 render_shell_start('Result', 'results', $user);
 ?>
 <nav class="pu-crumb" aria-label="Breadcrumb">
@@ -174,7 +176,7 @@ render_shell_start('Result', 'results', $user);
         <?php if ($candidates === []): ?>
         <p class="pu-note">No active candidates are available yet.<?= result_is_manager($user) ? ' Add them from Candidates before entering scores.' : ' An administrator needs to add the candidates before scores can be saved.' ?></p>
         <?php endif; ?>
-        <?php if ($offlineAgent): ?>
+        <?php if ($offlineFigures): ?>
         <section id="em-offline" class="em-offline" hidden
             data-user-id="<?= e((string) $user['id']) ?>"
             data-unit-id="<?= e((string) $unit['id']) ?>"
@@ -183,6 +185,7 @@ render_shell_start('Result', 'results', $user);
             data-candidates="<?= e(json_encode(array_map(static fn (array $c): int => (int) $c['id'], $candidates))) ?>"
             data-server-status="<?= e($sheet === null ? 'none' : (string) $sheet['status']) ?>"
             data-can-submit="<?= $canEdit && !$isSubmitted ? '1' : '0' ?>">
+            <h3 class="cms-card__title" style="font-size:1rem;margin:0 0 0.5rem">A. Enter and submit numerical results</h3>
             <p class="em-offline__notice"><?= e(SUBMISSION_NOTICE) ?></p>
             <div data-em-status></div>
             <div class="pu-list" data-em-records aria-live="polite"></div>
@@ -191,7 +194,7 @@ render_shell_start('Result', 'results', $user);
             <?php endif; ?>
         </section>
         <?php endif; ?>
-        <form method="post" action="<?= e(url('results/entry.php?unit=' . (int) $unit['id'])) ?>" data-pu-busy="Saving…"<?= $offlineAgent ? ' data-em-offline-form' : '' ?>>
+        <form method="post" action="<?= e(url('results/entry.php?unit=' . (int) $unit['id'])) ?>" data-pu-busy="Saving…"<?= $offlineFigures ? ' data-em-offline-form' : '' ?>>
             <input type="hidden" name="csrf_token" value="<?= e(csrf_token()) ?>">
             <input type="hidden" name="unit_id" value="<?= e((string) $unit['id']) ?>">
             <div class="pu-form-grid">
@@ -253,7 +256,7 @@ render_shell_start('Result', 'results', $user);
             $latestCheck = is_array($latest) ? sheet_verify($latest, (int) $user['id']) : null;
             $hasVersions = sheet_versions_for_unit((int) $unit['id']) !== [];
         ?>
-        <p class="pu-note">Uploads are kept exactly as received with a SHA-256 fingerprint. A new upload never replaces or deletes an earlier version. This is a monitoring record, not an official INEC result.</p>
+        <p class="pu-note">B. Submit result sheet only — no candidate scores required. Uploads are kept exactly as received with a SHA-256 fingerprint. A new upload never replaces or deletes an earlier version. Server receipt means the file is stored for review; it is not approval or an official INEC result.</p>
         <?php if (is_array($latest) && $latestCheck['deliverable'] && str_starts_with((string) $latest['mime'], 'image/')): ?>
         <img class="sheet-preview" src="<?= e(url('results/sheet-file.php?id=' . (int) $latest['id'])) ?>" alt="Uploaded result sheet for <?= e((string) $unit['unit_code']) ?>">
         <?php elseif (is_array($latest) && $latestCheck['deliverable']): ?>
@@ -292,7 +295,16 @@ render_shell_start('Result', 'results', $user);
         </div>
         <?php endif; ?>
         <?php if ($canUpload): ?>
-        <form method="post" action="<?= e(url('results/entry.php?unit=' . (int) $unit['id'])) ?>" enctype="multipart/form-data" data-pu-busy="Uploading…">
+        <div id="em-sheet-only"<?= $offlineSheet ? '' : ' hidden' ?>
+            data-user-id="<?= e((string) $user['id']) ?>"
+            data-unit-id="<?= e((string) $unit['id']) ?>"
+            data-unit-code="<?= e((string) $unit['unit_code']) ?>"
+            data-has-versions="<?= $hasVersions ? '1' : '0' ?>"
+            data-max-bytes="<?= e((string) sheet_max_bytes()) ?>">
+            <p class="pu-note" data-em-sheet-status aria-live="polite"></p>
+            <div class="pu-list" data-em-sheet-records aria-live="polite"></div>
+        </div>
+        <form method="post" action="<?= e(url('results/entry.php?unit=' . (int) $unit['id'])) ?>" enctype="multipart/form-data" data-pu-busy="Uploading…" id="sheet-only"<?= $offlineSheet ? ' data-em-sheet-form' : '' ?>>
             <input type="hidden" name="csrf_token" value="<?= e(csrf_token()) ?>">
             <input type="hidden" name="intent" value="upload_sheet">
             <input type="hidden" name="unit_id" value="<?= e((string) $unit['id']) ?>">
@@ -315,8 +327,9 @@ render_shell_start('Result', 'results', $user);
             </div>
             <?php endif; ?>
             <div class="pu-form-actions">
-                <button class="cms-btn cms-btn--primary" type="submit"><?= $hasVersions ? 'Upload new version' : 'Upload result sheet' ?></button>
+                <button class="cms-btn cms-btn--primary" type="submit" name="em_sheet_action" value="queue"><?= $hasVersions ? 'Submit result sheet only (new version)' : 'Submit result sheet only' ?></button>
             </div>
+            <p class="pu-note">While offline, the file is saved on this device and uploaded when connectivity returns. No numerical scores are required for this action.</p>
         </form>
         <?php elseif ((int) $unit['is_active'] !== 1): ?>
         <p class="pu-note">This polling unit is inactive, so a result sheet cannot be uploaded.</p>
@@ -331,7 +344,10 @@ if ($user['role'] === 'polling_agent' && submission_schema_ready()): ?>
 <script nonce="<?= e(app_csp_nonce()) ?>" src="<?= e(asset_url('assets/js/offline-sync.js')) ?>"></script>
 <script nonce="<?= e(app_csp_nonce()) ?>" src="<?= e(asset_url('assets/js/offline-register.js')) ?>"></script>
 <?php endif;
-if ($offlineAgent): ?>
+if ($offlineFigures): ?>
 <script nonce="<?= e(app_csp_nonce()) ?>" src="<?= e(asset_url('assets/js/offline-entry.js')) ?>"></script>
+<?php endif;
+if ($offlineSheet): ?>
+<script nonce="<?= e(app_csp_nonce()) ?>" src="<?= e(asset_url('assets/js/offline-sheet.js')) ?>"></script>
 <?php endif;
 render_shell_end();

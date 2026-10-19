@@ -4,6 +4,7 @@ declare(strict_types=1);
 require_once __DIR__ . '/bootstrap.php';
 require_once __DIR__ . '/csrf.php';
 require_once __DIR__ . '/auth.php';
+require_once __DIR__ . '/scope.php';
 require_once __DIR__ . '/dashboard_view.php';
 
 const RESULT_PAGE_SIZE = 20;
@@ -90,12 +91,11 @@ function result_is_manager(array $user): bool
  */
 function result_can_view_unit(array $user, array $unit): bool
 {
-    if ($user['role'] === 'polling_agent') {
-        return (int) ($unit['is_active'] ?? 0) === 1
-            && (int) ($unit['agent_user_id'] ?? 0) === (int) $user['id'];
+    if (!in_array($user['role'], RESULT_VIEWERS, true)) {
+        return false;
     }
 
-    return in_array($user['role'], RESULT_VIEWERS, true);
+    return scope_can_unit($user, $unit);
 }
 
 /**
@@ -143,11 +143,23 @@ function result_render_missing_schema(array $user): void
 }
 
 /**
+ * @param array{id: int, role: string}|null $user
  * @return array{units: int, submitted: int, drafts: int, missing: int}
  */
-function result_summary(int $agentId = 0): array
+function result_summary(?array $user = null, int $agentId = 0): array
 {
-    $where = $agentId > 0 ? 'WHERE pu.agent_user_id = :agent AND pu.is_active = 1' : '';
+    $where = [];
+    $params = [];
+    if ($agentId > 0) {
+        $where[] = 'pu.agent_user_id = :agent';
+        $where[] = 'pu.is_active = 1';
+        $params['agent'] = $agentId;
+    } elseif (is_array($user)) {
+        $scope = scope_sql_units($user, 'pu');
+        $where[] = $scope['sql'];
+        $params = array_merge($params, $scope['params']);
+    }
+    $sqlWhere = $where === [] ? '' : 'WHERE ' . implode(' AND ', $where);
     $statement = db()->prepare(
         "SELECT
             COUNT(*) AS units,
@@ -156,10 +168,10 @@ function result_summary(int $agentId = 0): array
             COALESCE(SUM(r.id IS NULL), 0) AS missing
          FROM polling_units pu
          LEFT JOIN polling_unit_results r ON r.polling_unit_id = pu.id
-         {$where}"
+         {$sqlWhere}"
     );
-    if ($agentId > 0) {
-        $statement->bindValue(':agent', $agentId, PDO::PARAM_INT);
+    foreach ($params as $key => $value) {
+        $statement->bindValue(':' . $key, $value, PDO::PARAM_INT);
     }
     $statement->execute();
     $row = $statement->fetch();
@@ -176,11 +188,22 @@ function result_summary(int $agentId = 0): array
 }
 
 /**
+ * @param array{id: int, role: string}|null $user
  * @return list<array{id: int, name: string}>
  */
-function result_wards(): array
+function result_wards(?array $user = null): array
 {
-    $rows = db()->query('SELECT id, name FROM wards ORDER BY name')->fetchAll();
+    if (is_array($user)) {
+        $scope = scope_sql_filter_wards($user, 'w');
+        $statement = db()->prepare('SELECT w.id, w.name FROM wards w WHERE ' . $scope['sql'] . ' ORDER BY w.name');
+        foreach ($scope['params'] as $key => $value) {
+            $statement->bindValue(':' . $key, $value, PDO::PARAM_INT);
+        }
+        $statement->execute();
+        $rows = $statement->fetchAll();
+    } else {
+        $rows = db()->query('SELECT id, name FROM wards ORDER BY name')->fetchAll();
+    }
     $wards = [];
     foreach ($rows as $row) {
         $wards[] = ['id' => (int) $row['id'], 'name' => (string) $row['name']];
@@ -193,7 +216,10 @@ function result_wards(): array
  * @param array<string, mixed> $query
  * @return array{q: string, ward: int, status: string, page: int}
  */
-function result_filters_from_query(array $query): array
+/**
+ * @param array{id: int, role: string}|null $user
+ */
+function result_filters_from_query(array $query, ?array $user = null): array
 {
     $q = trim((string) ($query['q'] ?? ''));
     if (strlen($q) > 100) {
@@ -203,7 +229,7 @@ function result_filters_from_query(array $query): array
     $wardId = $ward === false ? 0 : (int) $ward;
     if ($wardId > 0) {
         $known = false;
-        foreach (result_wards() as $item) {
+        foreach (result_wards($user) as $item) {
             if ($item['id'] === $wardId) {
                 $known = true;
                 break;
@@ -265,10 +291,11 @@ function result_list(array $filters, array $user): array
 {
     $where = [];
     $params = [];
+    $scope = scope_sql_units($user, 'pu');
+    $where[] = $scope['sql'];
+    $params = array_merge($params, $scope['params']);
     if ($user['role'] === 'polling_agent') {
-        $where[] = 'pu.agent_user_id = :agent_id';
         $where[] = 'pu.is_active = 1';
-        $params['agent_id'] = (int) $user['id'];
     }
     if ($filters['q'] !== '') {
         $like = result_like($filters['q']);

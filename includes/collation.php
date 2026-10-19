@@ -4,11 +4,13 @@ declare(strict_types=1);
 require_once __DIR__ . '/bootstrap.php';
 require_once __DIR__ . '/csrf.php';
 require_once __DIR__ . '/auth.php';
+require_once __DIR__ . '/scope.php';
 require_once __DIR__ . '/dashboard_view.php';
 require_once __DIR__ . '/result_review.php';
 
 const COLLATION_READERS = ['super_admin', 'admin', 'supervisor', 'collation_officer', 'viewer'];
 const COLLATION_SIGNERS = ['super_admin', 'admin', 'supervisor', 'collation_officer'];
+const COLLATION_CONSTITUENCY_SIGNERS = ['super_admin', 'admin'];
 
 /**
  * @return array{id: int, username: string, email: string, full_name: string, role: string, last_login_at?: ?string}
@@ -40,9 +42,24 @@ function collation_review_summary(): array
     return result_review_schema_ready() && sheet_schema_ready() ? review_summary_by_ward() : [];
 }
 
-function collation_can_sign(array $user): bool
+function collation_can_sign(array $user, ?int $wardId = null): bool
 {
-    return in_array($user['role'], COLLATION_SIGNERS, true);
+    if (!in_array($user['role'], COLLATION_SIGNERS, true)) {
+        return false;
+    }
+    if ($user['role'] === 'viewer') {
+        return false;
+    }
+    if ($wardId === null) {
+        return in_array($user['role'], COLLATION_CONSTITUENCY_SIGNERS, true);
+    }
+
+    return scope_can_ward($user, $wardId);
+}
+
+function collation_can_sign_constituency(array $user): bool
+{
+    return in_array($user['role'], COLLATION_CONSTITUENCY_SIGNERS, true);
 }
 
 function collation_schema_ready(): bool
@@ -123,24 +140,39 @@ function collation_render_missing_schema(array $user): void
 }
 
 /**
+ * @param array{id: int, role: string}|null $user
  * @return array{wards: int, collated: int, submitted: int, missing: int}
  */
-function collation_summary(): array
+function collation_summary(?array $user = null): array
 {
-    $row = db()->query(
+    $wardScope = is_array($user) ? scope_sql_wards($user, 'w') : ['sql' => '1=1', 'params' => []];
+    $unitScope = is_array($user) ? scope_sql_units($user, 'pu') : ['sql' => '1=1', 'params' => []];
+    $wardStmt = db()->prepare(
         "SELECT
             COUNT(*) AS wards,
             COALESCE(SUM(c.id IS NOT NULL), 0) AS collated
          FROM wards w
-         LEFT JOIN ward_collations c ON c.ward_id = w.id"
-    )->fetch();
-    $units = db()->query(
+         LEFT JOIN ward_collations c ON c.ward_id = w.id
+         WHERE {$wardScope['sql']}"
+    );
+    foreach ($wardScope['params'] as $key => $value) {
+        $wardStmt->bindValue(':' . $key, $value, PDO::PARAM_INT);
+    }
+    $wardStmt->execute();
+    $row = $wardStmt->fetch();
+    $unitStmt = db()->prepare(
         "SELECT
             COALESCE(SUM(r.status = 'submitted'), 0) AS submitted,
             COALESCE(SUM(pu.is_active = 1 AND (r.id IS NULL OR r.status <> 'submitted')), 0) AS missing
          FROM polling_units pu
-         LEFT JOIN polling_unit_results r ON r.polling_unit_id = pu.id"
-    )->fetch();
+         LEFT JOIN polling_unit_results r ON r.polling_unit_id = pu.id
+         WHERE {$unitScope['sql']}"
+    );
+    foreach ($unitScope['params'] as $key => $value) {
+        $unitStmt->bindValue(':' . $key, $value, PDO::PARAM_INT);
+    }
+    $unitStmt->execute();
+    $units = $unitStmt->fetch();
     if (!is_array($row)) {
         $row = [];
     }
@@ -157,11 +189,13 @@ function collation_summary(): array
 }
 
 /**
+ * @param array{id: int, role: string}|null $user
  * @return list<array<string, mixed>>
  */
-function collation_ward_rows(): array
+function collation_ward_rows(?array $user = null): array
 {
-    $statement = db()->query(
+    $scope = is_array($user) ? scope_sql_wards($user, 'w') : ['sql' => '1=1', 'params' => []];
+    $statement = db()->prepare(
         "SELECT w.id, w.name,
                 COUNT(pu.id) AS units,
                 COALESCE(SUM(pu.is_active = 1), 0) AS active_units,
@@ -175,9 +209,14 @@ function collation_ward_rows(): array
          LEFT JOIN polling_unit_results r ON r.polling_unit_id = pu.id
          LEFT JOIN ward_collations c ON c.ward_id = w.id
          LEFT JOIN users u ON u.id = c.collated_by
+         WHERE {$scope['sql']}
          GROUP BY w.id, w.name, c.id, c.collated_at, u.full_name
          ORDER BY w.name"
     );
+    foreach ($scope['params'] as $key => $value) {
+        $statement->bindValue(':' . $key, $value, PDO::PARAM_INT);
+    }
+    $statement->execute();
     $rows = [];
     foreach ($statement as $row) {
         $rows[] = [
@@ -199,11 +238,15 @@ function collation_ward_rows(): array
 }
 
 /**
+ * @param array{id: int, role: string}|null $user
  * @return array<string, mixed>|null
  */
-function collation_ward(int $wardId): ?array
+function collation_ward(int $wardId, ?array $user = null): ?array
 {
-    foreach (collation_ward_rows() as $ward) {
+    if (is_array($user) && !scope_can_ward($user, $wardId)) {
+        return null;
+    }
+    foreach (collation_ward_rows($user) as $ward) {
         if ($ward['id'] === $wardId) {
             return $ward;
         }
@@ -313,14 +356,28 @@ function collation_ward_units(int $wardId): array
 }
 
 /**
+ * @param array{id: int, role: string}|null $actor
  * @return array{ok: bool, error: string}
  */
-function collation_sign_ward(int $wardId, int $actorId): array
+function collation_sign_ward(int $wardId, int $actorId, ?array $actor = null): array
 {
     $pdo = db();
     $pdo->beginTransaction();
     try {
-        $ward = collation_ward($wardId);
+        if ($actor === null && $actorId > 0) {
+            $lookup = $pdo->prepare('SELECT id, role FROM users WHERE id = :id AND is_active = 1 LIMIT 1');
+            $lookup->execute(['id' => $actorId]);
+            $row = $lookup->fetch();
+            if (is_array($row)) {
+                $actor = ['id' => (int) $row['id'], 'role' => (string) $row['role']];
+            }
+        }
+        if (!is_array($actor) || !collation_can_sign($actor, $wardId)) {
+            $pdo->rollBack();
+
+            return ['ok' => false, 'error' => 'Your account cannot collate this ward.'];
+        }
+        $ward = collation_ward($wardId, $actor);
         if ($ward === null) {
             $pdo->rollBack();
 

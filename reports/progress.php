@@ -11,7 +11,7 @@ if (!report_schema_ready()) {
 }
 if ((string) ($_GET['format'] ?? '') === 'csv') {
     try {
-        report_send_progress_csv();
+        report_send_progress_csv($user);
     } catch (PDOException $exception) {
         error_log($exception->getMessage());
         http_response_code(500);
@@ -20,7 +20,7 @@ if ((string) ($_GET['format'] ?? '') === 'csv') {
 }
 
 try {
-    $wards = report_progress();
+    $wards = report_progress($user);
 } catch (PDOException $exception) {
     error_log($exception->getMessage());
     http_response_code(500);

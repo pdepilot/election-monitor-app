@@ -387,9 +387,10 @@ function submission_process(array $user, array $data): never
 function submission_sync_panel(array $user): void
 {
     ?>
-    <section id="em-sync" class="em-sync cms-card" hidden aria-label="Results saved on this device"
+    <section id="em-sync" class="em-sync cms-card" hidden aria-label="Results and sheets saved on this device"
         data-user-id="<?= e((string) $user['id']) ?>"
         data-submit-url="<?= e(url('results/api-submit.php')) ?>"
+        data-sheet-upload-url="<?= e(url('results/api-sheet-upload.php')) ?>"
         data-status-url="<?= e(url('results/api-status.php')) ?>"
         data-entry-url="<?= e(url('results/entry.php')) ?>"
         data-sw-url="<?= e(url('results/offline-sw.php')) ?>"
@@ -405,11 +406,12 @@ function submission_sync_panel(array $user): void
             </div>
             <p class="em-sync__msg" data-em-sync-msg role="status" aria-live="polite"></p>
             <details class="em-sync__details">
-                <summary>Results saved on this device (<span data-em-total>0</span>)</summary>
+                <summary>Saved on this device (<span data-em-total>0</span>)</summary>
                 <ul class="em-sync__items" data-em-list></ul>
             </details>
             <p class="em-sync__offline" data-em-offline-ready role="status"></p>
             <p class="em-sync__notice"><?= e(SUBMISSION_NOTICE) ?></p>
+            <p class="em-sync__notice">Result-sheet receipt means the file is stored for review. It is not approval or an official INEC result.</p>
         </div>
     </section>
     <?php

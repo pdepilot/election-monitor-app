@@ -14,10 +14,12 @@ if (!result_schema_ready()) {
     exit;
 }
 
-$filters = result_filters_from_query($_GET);
+$filters = result_filters_from_query($_GET, $user);
 try {
-    $summary = result_summary($user['role'] === 'polling_agent' ? (int) $user['id'] : 0);
-    $wards = result_wards();
+    $summary = $user['role'] === 'polling_agent'
+        ? result_summary(null, (int) $user['id'])
+        : result_summary($user);
+    $wards = result_wards($user);
     $list = result_list($filters, $user);
 } catch (PDOException $exception) {
     error_log($exception->getMessage());

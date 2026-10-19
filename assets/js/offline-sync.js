@@ -22,6 +22,7 @@
     var userId = parseInt(root.getAttribute('data-user-id'), 10);
     var config = {
         submitUrl: root.getAttribute('data-submit-url'),
+        sheetUploadUrl: root.getAttribute('data-sheet-upload-url') || '',
         statusUrl: root.getAttribute('data-status-url'),
         entryUrl: root.getAttribute('data-entry-url'),
         timeoutMs: 20000,
@@ -45,11 +46,12 @@
         lastStatusMs: 0,
         timer: null,
         message: null,
-        records: []
+        records: [],
+        sheets: []
     };
     var metrics = [];
 
-    var NO_RETRY = ['submission_id_reused', 'submission_id_conflict', 'unsupported_schema', 'candidates_changed'];
+    var NO_RETRY = ['submission_id_reused', 'submission_id_conflict', 'unsupported_schema', 'candidates_changed', 'upload_id_reused', 'file_type', 'file_too_large'];
     var ATTENTION_HINTS = {
         unit_not_assigned: 'Contact your coordinator. Once the assignment is restored, use Retry.',
         unit_inactive: 'Contact your coordinator. Once the polling unit is active again, use Retry.',
@@ -59,7 +61,11 @@
         submission_id_reused: 'The server kept the original figures. Use "Edit & resubmit" to send a new submission.',
         submission_id_conflict: 'Use "Edit & resubmit" to send a new submission.',
         unsupported_schema: 'Reload the page while online to update the app.',
-        role_forbidden: 'Sign in with your polling-agent account.'
+        role_forbidden: 'Sign in with your polling-agent account.',
+        upload_id_reused: 'The server kept the original sheet. Queue a new upload if you need another version.',
+        file_type: 'Choose a JPEG, PNG, WebP, or PDF result sheet.',
+        file_too_large: 'Choose a smaller photo or PDF within the upload limit.',
+        file_missing: 'The queued file is missing from this device. Select the sheet again.'
     };
 
     var el = {
@@ -147,6 +153,10 @@
         var serverMessage = json && typeof json.message === 'string' ? json.message : '';
         if ((response.status === 201 || response.status === 200) && json && json.ok === true && code === 'received'
             && json.submission_id === record.submission_id && typeof json.received_at === 'string') {
+            return { kind: 'received', json: json };
+        }
+        if ((response.status === 201 || response.status === 200) && json && json.ok === true && code === 'received'
+            && record.client_upload_id && json.client_upload_id === record.client_upload_id && typeof json.received_at === 'string') {
             return { kind: 'received', json: json };
         }
         if (response.status === 0) {
@@ -385,6 +395,112 @@
         });
     }
 
+    function applySheet(record, outcome) {
+        var now = Date.now();
+        return store.updateSheetUpload(record.client_upload_id, function (r) {
+            if (r.state !== 'sending' || r.sending_owner !== tabId) {
+                return false;
+            }
+            r.sending_owner = null;
+            if (outcome.kind === 'received') {
+                var json = outcome.json;
+                r.state = 'received';
+                r.last_error = null;
+                r.next_attempt_ms = 0;
+                r.acked_ms = now;
+                r.server = {
+                    received_at: json.received_at,
+                    upload_id: json.upload_id,
+                    sha256: json.sha256,
+                    replayed: !!json.replayed,
+                    message: json.message,
+                    notice: json.notice
+                };
+                // Drop local file bytes after confirmed receipt to free quota.
+                r.blob = null;
+                return;
+            }
+            r.last_error = { code: outcome.code, message: outcome.message, at_ms: now };
+            if (outcome.kind === 'attention') {
+                r.state = 'needs_attention';
+                r.next_attempt_ms = 0;
+                return;
+            }
+            r.state = 'pending';
+            r.next_attempt_ms = outcome.kind === 'auth' ? 0 : now + (outcome.retryAfterMs != null ? outcome.retryAfterMs + Math.round(Math.random() * 500) : backoff(r.attempts));
+        }).then(function () {
+            if (outcome.kind === 'received') {
+                state.lastSyncMs = now;
+                state.reachable = true;
+                store.setMeta('last_sync_ms:' + userId, now).catch(function () {});
+            } else if (outcome.kind === 'auth') {
+                state.authRequired = true;
+                state.reachable = true;
+            } else if (outcome.kind === 'attention') {
+                state.reachable = true;
+            } else {
+                state.reachable = outcome.network ? false : true;
+            }
+            store.notify({ type: outcome.kind === 'received' ? 'sheet_received' : (outcome.kind === 'attention' ? 'sheet_attention' : 'sheet_retry'), polling_unit_id: record.polling_unit_id, client_upload_id: record.client_upload_id });
+            return outcome.kind === 'received' || outcome.kind === 'attention' ? 'continue' : 'stop';
+        });
+    }
+
+    function sendOneSheet(record) {
+        if (!config.sheetUploadUrl) {
+            return Promise.resolve('continue');
+        }
+        return store.updateSheetUpload(record.client_upload_id, function (r) {
+            if (r.state !== 'pending') {
+                return false;
+            }
+            r.state = 'sending';
+            r.sending_owner = tabId;
+            r.attempts = (r.attempts || 0) + 1;
+            r.last_attempt_ms = Date.now();
+        }).then(function (claimed) {
+            if (!claimed || claimed.state !== 'sending' || claimed.sending_owner !== tabId) {
+                return 'continue';
+            }
+            if (!(claimed.blob instanceof Blob) || claimed.blob.size < 1) {
+                return applySheet(claimed, { kind: 'attention', code: 'file_missing', message: 'The queued file is missing from this device. Select the sheet again.' });
+            }
+            store.notify({ type: 'sheet_sending', polling_unit_id: claimed.polling_unit_id, client_upload_id: claimed.client_upload_id });
+            var body = new FormData();
+            body.append('client_upload_id', claimed.client_upload_id);
+            body.append('polling_unit_id', String(claimed.polling_unit_id));
+            body.append('upload_kind', claimed.upload_kind || '');
+            body.append('upload_reason', claimed.upload_reason || '');
+            body.append('result_sheet', claimed.blob, claimed.original_name || 'result-sheet');
+            var send = function () {
+                return request(config.sheetUploadUrl, {
+                    method: 'POST',
+                    headers: { Accept: 'application/json', 'X-CSRF-Token': csrf },
+                    body: body
+                });
+            };
+            return send().then(function (response) {
+                var outcome = classify(response, claimed);
+                if (outcome.kind !== 'csrf') {
+                    return outcome;
+                }
+                return refreshStatus(true).then(function (status) {
+                    if (status === 'auth') {
+                        return { kind: 'auth', code: 'auth_required', message: 'Your session has ended. Sign in again to send queued sheets.' };
+                    }
+                    return send().then(function (second) {
+                        var retried = classify(second, claimed);
+                        return retried.kind === 'csrf'
+                            ? { kind: 'retry', code: 'csrf_invalid', message: 'The security check failed. The device will try again shortly.' }
+                            : retried;
+                    });
+                });
+            }).then(function (outcome) {
+                return applySheet(claimed, outcome);
+            });
+        });
+    }
+
     /* ---------- the worker ---------- */
 
     function dueItems(records) {
@@ -402,18 +518,30 @@
         }
         return store.listSubmissions(userId).then(function (records) {
             var due = dueItems(records);
-            if (!due.length) {
-                return null;
+            if (due.length) {
+                return sendOne(due[0]).then(function (next) {
+                    return next === 'stop' ? null : drain();
+                });
             }
-            return sendOne(due[0]).then(function (next) {
-                return next === 'stop' ? null : drain();
+            return store.listSheetUploads(userId).then(function (sheets) {
+                var dueSheets = dueItems(sheets);
+                if (!dueSheets.length) {
+                    return null;
+                }
+                return sendOneSheet(dueSheets[0]).then(function (next) {
+                    return next === 'stop' ? null : drain();
+                });
             });
         });
     }
 
     function runOnce(options) {
         return store.resetAbandoned(userId).then(function () {
+            return store.resetAbandonedSheets(userId);
+        }).then(function () {
             return options.manual ? store.clearBackoff(userId) : null;
+        }).then(function () {
+            return options.manual ? store.clearSheetBackoff(userId) : null;
         }).then(function () {
             if (navigator.onLine === false) {
                 state.reachable = null;
@@ -495,7 +623,7 @@
         if (state.authRequired) {
             return;
         }
-        var pending = state.records.filter(function (r) {
+        var pending = state.records.concat(state.sheets).filter(function (r) {
             return r.state === 'pending' || r.state === 'sending';
         });
         if (!pending.length) {
@@ -565,18 +693,50 @@
         return 'Not yet received by the server.';
     }
 
-    function renderList(records) {
+    function sheetDetailText(record) {
+        var name = record.original_name ? 'File: ' + record.original_name + '. ' : '';
+        if (record.state === 'received' && record.server) {
+            return name + 'Server receipt ' + stamp(Date.parse(record.server.received_at)) + '. Stored for review — not approved yet.';
+        }
+        if (record.state === 'needs_attention' && record.last_error) {
+            return name + record.last_error.message + (ATTENTION_HINTS[record.last_error.code] ? ' ' + ATTENTION_HINTS[record.last_error.code] : '');
+        }
+        if (record.state === 'pending' && record.last_error) {
+            if (record.last_error.code === 'auth_required') {
+                return name + 'Waiting for you to sign in again. Not yet received by the server.';
+            }
+            var next = record.next_attempt_ms && record.next_attempt_ms > Date.now() ? ' Next try about ' + stamp(record.next_attempt_ms) + '.' : '';
+            return name + record.last_error.message + next + ' Not yet received by the server.';
+        }
+        return name + 'Saved on this device — pending upload. Not yet received by the server.';
+    }
+
+    function renderList(records, sheets) {
         el.list.textContent = '';
-        records.forEach(function (record) {
+        var combined = records.map(function (r) {
+            return { kind: 'result', record: r, created_ms: r.created_ms };
+        }).concat((sheets || []).map(function (r) {
+            return { kind: 'sheet', record: r, created_ms: r.created_ms };
+        })).sort(function (a, b) {
+            return b.created_ms - a.created_ms;
+        });
+        combined.forEach(function (entry) {
+            var record = entry.record;
             var item = document.createElement('li');
             item.className = 'em-sync__item';
-            item.setAttribute('data-submission-id', record.submission_id);
             item.setAttribute('data-state', record.state);
+            if (entry.kind === 'sheet') {
+                item.setAttribute('data-client-upload-id', record.client_upload_id);
+                item.setAttribute('data-item-type', 'sheet');
+            } else {
+                item.setAttribute('data-submission-id', record.submission_id);
+                item.setAttribute('data-item-type', 'result');
+            }
             var tag = label(record);
             var head = document.createElement('div');
             head.className = 'em-sync__item-head';
             var unit = document.createElement('strong');
-            unit.textContent = record.unit_code || ('Unit ' + record.polling_unit_id);
+            unit.textContent = (entry.kind === 'sheet' ? 'Sheet · ' : 'Scores · ') + (record.unit_code || ('Unit ' + record.polling_unit_id));
             var when = document.createElement('span');
             when.className = 'em-sync__when';
             when.textContent = 'Saved ' + stamp(record.created_ms);
@@ -589,7 +749,7 @@
             item.appendChild(head);
             var detail = document.createElement('p');
             detail.className = 'em-sync__detail';
-            detail.textContent = detailText(record);
+            detail.textContent = entry.kind === 'sheet' ? sheetDetailText(record) : detailText(record);
             item.appendChild(detail);
             var actions = document.createElement('div');
             actions.className = 'em-sync__actions';
@@ -597,18 +757,29 @@
                 var code = record.last_error ? record.last_error.code : '';
                 if (NO_RETRY.indexOf(code) === -1) {
                     actions.appendChild(button('Retry', function () {
-                        store.retrySubmission(record.submission_id).then(function () {
+                        var promise = entry.kind === 'sheet'
+                            ? store.retrySheetUpload(record.client_upload_id)
+                            : store.retrySubmission(record.submission_id);
+                        promise.then(function () {
                             store.notify({ type: 'retry', polling_unit_id: record.polling_unit_id });
                             sync('retry', { manual: true });
                         });
                     }));
                 }
-                var edit = document.createElement('a');
-                edit.className = 'cms-btn cms-btn--ghost cms-btn--sm';
-                edit.href = config.entryUrl + '?unit=' + encodeURIComponent(record.polling_unit_id) + '#resubmit-' + record.submission_id;
-                edit.textContent = 'Edit & resubmit';
-                edit.setAttribute('data-em-edit', record.submission_id);
-                actions.appendChild(edit);
+                if (entry.kind === 'result') {
+                    var edit = document.createElement('a');
+                    edit.className = 'cms-btn cms-btn--ghost cms-btn--sm';
+                    edit.href = config.entryUrl + '?unit=' + encodeURIComponent(record.polling_unit_id) + '#resubmit-' + record.submission_id;
+                    edit.textContent = 'Edit & resubmit';
+                    edit.setAttribute('data-em-edit', record.submission_id);
+                    actions.appendChild(edit);
+                } else {
+                    var reopen = document.createElement('a');
+                    reopen.className = 'cms-btn cms-btn--ghost cms-btn--sm';
+                    reopen.href = config.entryUrl + '?unit=' + encodeURIComponent(record.polling_unit_id) + '#sheet-only';
+                    reopen.textContent = 'Open sheet upload';
+                    actions.appendChild(reopen);
+                }
             } else if (record.state === 'pending' && record.last_error && record.last_error.code !== 'auth_required') {
                 actions.appendChild(button('Retry now', function () {
                     sync('manual', { manual: true });
@@ -641,15 +812,21 @@
     }
 
     function render() {
-        return store.listSubmissions(userId).then(function (records) {
+        return Promise.all([store.listSubmissions(userId), store.listSheetUploads(userId)]).then(function (parts) {
+            var records = parts[0];
+            var sheets = parts[1];
             state.records = records;
+            state.sheets = sheets;
             var visible = records.filter(function (r) {
                 return r.user_id === userId;
             });
-            var pending = visible.filter(function (r) {
+            var visibleSheets = sheets.filter(function (r) {
+                return r.user_id === userId;
+            });
+            var pending = visible.concat(visibleSheets).filter(function (r) {
                 return r.state === 'pending' || r.state === 'sending';
             }).length;
-            var attention = visible.filter(function (r) {
+            var attention = visible.concat(visibleSheets).filter(function (r) {
                 return r.state === 'needs_attention';
             }).length;
             var conn = connectionLabel();
@@ -657,7 +834,7 @@
             el.conn.setAttribute('data-conn', conn[1]);
             el.pending.textContent = String(pending);
             el.attention.textContent = String(attention);
-            el.total.textContent = String(visible.length);
+            el.total.textContent = String(visible.length + visibleSheets.length);
             el.last.textContent = state.lastSyncMs ? 'Last server sync ' + stamp(state.lastSyncMs) : 'No server sync yet on this device';
             el.button.disabled = !!state.running;
             el.button.textContent = state.running ? 'Syncing…' : 'Sync now';
@@ -666,13 +843,13 @@
             if (!message && state.authRequired) {
                 message = { kind: 'warn', text: state.wrongUser
                     ? 'This device holds results for another account. Sign in as that agent to send them.'
-                    : 'Your session has ended. Results stay on this device. Sign in again and they will be sent with their original submission IDs.' };
+                    : 'Your session has ended. Results and sheets stay on this device. Sign in again and they will be sent with their original IDs.' };
             } else if (!message && state.otherTab && pending) {
                 message = { kind: 'note', text: 'Another open tab of this portal is sending results.' };
             }
             el.msg.textContent = message ? message.text : '';
             el.msg.className = 'em-sync__msg' + (message ? ' em-sync__msg--' + message.kind : '');
-            renderList(visible);
+            renderList(visible, visibleSheets);
             return records;
         }).catch(function (error) {
             el.msg.textContent = 'Results on this device could not be read: ' + (error && error.message ? error.message : 'storage error');
@@ -686,7 +863,7 @@
     });
 
     store.onChange(function (detail) {
-        if (detail && detail.type === 'queued' && detail.user_id === userId) {
+        if (detail && (detail.type === 'queued' || detail.type === 'sheet_queued') && detail.user_id === userId) {
             sync('queued');
             return;
         }

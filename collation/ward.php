@@ -18,7 +18,7 @@ if (!is_int($wardId) || $wardId < 1) {
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $token = $_POST['csrf_token'] ?? null;
-    if (!collation_can_sign($user)) {
+    if (!collation_can_sign($user, $wardId > 0 ? $wardId : null)) {
         http_response_code(403);
         collation_flash('error', 'Your account cannot sign a collation.');
         collation_redirect('collation/ward.php?id=' . $wardId);
@@ -28,7 +28,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         collation_redirect($wardId > 0 ? 'collation/ward.php?id=' . $wardId : 'collation/index.php');
     }
     try {
-        $result = collation_sign_ward($wardId, (int) $user['id']);
+        $result = collation_sign_ward($wardId, (int) $user['id'], $user);
         collation_flash($result['ok'] ? 'success' : 'error', $result['ok'] ? 'Ward collation saved.' : $result['error']);
     } catch (PDOException $exception) {
         error_log($exception->getMessage());
@@ -37,7 +37,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     collation_redirect('collation/ward.php?id=' . $wardId);
 }
 
-$ward = $wardId > 0 ? collation_ward($wardId) : null;
+$ward = $wardId > 0 ? collation_ward($wardId, $user) : null;
 if ($ward === null) {
     http_response_code(404);
     render_shell_start('Collation', 'collation', $user);
@@ -146,7 +146,7 @@ render_shell_start($ward['name'], 'collation', $user);
             <?php if ($ward['collation_id'] !== null): ?>
             <p class="pu-note">Collated<?= $ward['collated_by_name'] !== null ? ' by ' . e($ward['collated_by_name']) : '' ?><?= $ward['collated_at'] !== null ? ' on ' . e($ward['collated_at']) : '' ?>.</p>
             <?php endif; ?>
-            <?php if (collation_can_sign($user)): ?>
+            <?php if (collation_can_sign($user, $wardId)): ?>
             <form method="post" action="<?= e(url('collation/ward.php?id=' . $wardId)) ?>" data-pu-busy="Saving…">
                 <input type="hidden" name="csrf_token" value="<?= e(csrf_token()) ?>">
                 <input type="hidden" name="intent" value="collate">

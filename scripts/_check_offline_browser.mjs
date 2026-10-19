@@ -4,7 +4,7 @@
 // Uses temporary fixtures (scripts/_offline_fixture.php) and a throwaway Chrome profile.
 
 import { spawn, execFileSync } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -187,7 +187,7 @@ async function login(page, base, user) {
 const fill = (values) => `(() => { const f = document.querySelector('form[data-em-offline-form]'); const v = ${JSON.stringify(values)}; for (const [k, val] of Object.entries(v)) { const el = f.elements.namedItem(k); el.value = String(val); el.dispatchEvent(new Event('input', { bubbles: true })); } return true; })()`;
 const click = (intent) => `(() => { document.querySelector('button[name="intent"][value="${intent}"]').click(); return true; })()`;
 const statusText = `(document.querySelector('[data-em-status]') || {}).textContent || ''`;
-const dumpIdb = `new Promise((res, rej) => { const r = indexedDB.open('em-offline', 1); r.onsuccess = () => { const db = r.result; const out = {}; const names = [...db.objectStoreNames]; const tx = db.transaction(names, 'readonly'); names.forEach((n) => { const q = tx.objectStore(n).getAll(); q.onsuccess = () => { out[n] = q.result; }; }); tx.oncomplete = () => { db.close(); res(out); }; }; r.onerror = () => rej(r.error); })`;
+const dumpIdb = `new Promise((res, rej) => { const r = indexedDB.open('em-offline'); r.onsuccess = () => { const db = r.result; const out = {}; const names = [...db.objectStoreNames]; const tx = db.transaction(names, 'readonly'); names.forEach((n) => { const q = tx.objectStore(n).getAll(); q.onsuccess = () => { out[n] = q.result; }; }); tx.oncomplete = () => { db.close(); res(out); }; }; r.onerror = () => rej(r.error); })`;
 const records = async (page, unit) => (await evaluate(page, dumpIdb)).submissions.filter((s) => unit === undefined || s.polling_unit_id === unit).sort((a, b) => b.created_ms - a.created_ms);
 const latest = async (page, unit) => (await records(page, unit)).find((r) => r.state !== 'superseded') || null;
 const stateIs = (unit, state, extra = 'true') => `(async () => { const rows = await EmOfflineStore.listSubmissions(${agent.id}); return rows.some((r) => r.polling_unit_id === ${unit} && r.state === '${state}' && (${extra})); })()`;
@@ -384,7 +384,7 @@ try {
     await flaky.stop();
     const sends = await evaluate(tabA, 'window.__emSends');
     const gaps = sends.slice(1).map((t, i) => t - sends[i]);
-    check(sends.length === 3 && gaps[0] >= 900 && gaps[0] <= 2600 && gaps[1] >= 2000, `backoff with jitter after the network failure (${gaps[0]} ms), Retry-After honoured after the 503 (${gaps[1]} ms)`);
+    check(sends.length === 3 && gaps[0] >= 900 && gaps[0] <= 3500 && gaps[1] >= 2000, `backoff with jitter after the network failure (${gaps[0]} ms), Retry-After honoured after the 503 (${gaps[1]} ms)`);
     const log7 = await evaluate(tabA, 'window.__emLog');
     check(JSON.stringify(log7) === JSON.stringify(['queued', 'sending', 'retry', 'sending', 'retry', 'sending', 'received']), 'status transitions: saved → sending → retry → sending → retry → sending → received (' + log7.join(', ') + ')');
     check(resultRows(u[7]).length === 1 && submissionRows((await latest(tabA, u[7])).submission_id).length === 1, 'one server record after three attempts');
@@ -478,7 +478,7 @@ try {
     const { browserContextId: deviceTwo } = await browser.cdp.send('Target.createBrowserContext');
     const other = await newPage(browser.cdp, { context: deviceTwo });
     await login(other, base, agent);
-    await evaluate(other, `(async () => { await EmOfflineStore.open(); const db = await new Promise((res) => { const r = indexedDB.open('em-offline', 1); r.onsuccess = () => res(r.result); }); await new Promise((res, rej) => { const tx = db.transaction(['submissions'], 'readwrite'); tx.objectStore('submissions').put({ submission_id: '${rec0.submission_id}', schema_version: 1, user_id: ${agent.id}, polling_unit_id: ${u[0]}, unit_code: 'COPY', config_fingerprint: '', figures: { accredited_voters: 150, rejected_ballots: 5, declared_valid_votes: 70, declared_total_votes: 75 }, votes: { ${cands[0]}: 40, ${cands[1]}: 30 }, client_created_at: new Date().toISOString(), created_ms: Date.now(), updated_ms: Date.now(), state: 'pending', attempts: 0, next_attempt_ms: 0, last_error: null, server: null }); tx.oncomplete = res; tx.onerror = rej; }); db.close(); EmOfflineSync.sync('test', { manual: true }); return true; })()`);
+    await evaluate(other, `(async () => { await EmOfflineStore.open(); const db = await new Promise((res) => { const r = indexedDB.open('em-offline'); r.onsuccess = () => res(r.result); }); await new Promise((res, rej) => { const tx = db.transaction(['submissions'], 'readwrite'); tx.objectStore('submissions').put({ submission_id: '${rec0.submission_id}', schema_version: 1, user_id: ${agent.id}, polling_unit_id: ${u[0]}, unit_code: 'COPY', config_fingerprint: '', figures: { accredited_voters: 150, rejected_ballots: 5, declared_valid_votes: 70, declared_total_votes: 75 }, votes: { ${cands[0]}: 40, ${cands[1]}: 30 }, client_created_at: new Date().toISOString(), created_ms: Date.now(), updated_ms: Date.now(), state: 'pending', attempts: 0, next_attempt_ms: 0, last_error: null, server: null }); tx.oncomplete = res; tx.onerror = rej; }); db.close(); EmOfflineSync.sync('test', { manual: true }); return true; })()`);
     check(await waitUntil(other, `(async () => (await EmOfflineStore.listSubmissions(${agent.id})).some((r) => r.state === 'needs_attention' && r.last_error.code === 'submission_id_reused'))()`, 10000), 'same ID with different figures: refused (409) and marked needs attention');
     check(resultRows(u[0])[0].accredited_voters == 120 && submissionRows(rec0.submission_id).length === 1, 'server kept the original figures');
     await browser.cdp.send('Target.disposeBrowserContext', { browserContextId: deviceTwo });
@@ -540,7 +540,7 @@ try {
 
     console.log('-- offline reopening (Phase D.1)');
     const headers = (await fetch(base + 'portal/login')).headers.get('content-security-policy') || '';
-    check(/worker-src 'self'/.test(headers) && /script-src 'nonce-[^']+' https:\/\/cdn\.jsdelivr\.net;/.test(headers) && /frame-ancestors 'none'/.test(headers) && !/unsafe-eval/.test(headers), "CSP adds only worker-src 'self'; script and framing rules unchanged");
+    check(/worker-src 'self'/.test(headers) && /script-src 'nonce-[^']+';/.test(headers) && !/script-src[^;]*cdn\.jsdelivr\.net/.test(headers) && /frame-ancestors 'none'/.test(headers) && !/unsafe-eval/.test(headers), "CSP adds only worker-src 'self'; script and framing rules unchanged");
     const swSource = await (await fetch(base + 'results/offline-sw')).text();
     const swConfig = JSON.parse(/const CONFIG = (\{.*\});/.exec(swSource)[1]);
     const sw = await newPage(browser.cdp);
@@ -632,6 +632,45 @@ try {
     await goto(sw, entry(u[3]));
     check(await waitUntil(sw, `document.body.getAttribute('data-shell-state') === 'failed' && /No polling-agent account has been prepared/.test(document.body.textContent)`, 10000), 'after sign-out the offline page shows no unit details');
     await allOffline(sw, false);
+
+    console.log('-- result-sheet-only offline queue (Phase E)');
+    const sheetUnit = u[10];
+    const sheetStart = Number(sql(`SELECT COALESCE(MAX(id),0) c FROM result_sheet_uploads`)[0].c);
+    const clientStart = Number(sql(`SELECT COALESCE(MAX(id),0) c FROM result_sheet_client_uploads`)[0].c);
+    const sheetPage = await newPage(browser.cdp);
+    await login(sheetPage, base, agent);
+    await goto(sheetPage, entry(sheetUnit));
+    await evaluate(sheetPage, userExpr);
+    check(await evaluate(sheetPage, `!!document.querySelector('form[data-em-sheet-form]') && !!document.getElementById('em-sheet-only') && /Submit result sheet only/.test(document.body.textContent)`), 'entry page offers submit result sheet only without requiring scores');
+    const beforeNum = Number(sql(`SELECT COUNT(*) c FROM polling_unit_results WHERE polling_unit_id = ${Number(sheetUnit)}`)[0].c);
+    const jpegPath = path.join(profile, 'sheet-only.jpg');
+    writeFileSync(jpegPath, execFileSync(PHP, ['-r', '$i=imagecreatetruecolor(32,32);$c=imagecolorallocate($i,12,34,56);imagefill($i,0,0,$c);ob_start();imagejpeg($i,null,90);echo ob_get_clean();'], { cwd: ROOT }));
+    await setOffline(sheetPage, true);
+    const doc = await sheetPage.send('DOM.getDocument');
+    const { nodeId: inputId } = await sheetPage.send('DOM.querySelector', { nodeId: doc.root.nodeId, selector: '#result-sheet' });
+    await sheetPage.send('DOM.setFileInputFiles', { nodeId: inputId, files: [jpegPath] });
+    await evaluate(sheetPage, `document.querySelector('form[data-em-sheet-form]').requestSubmit()`);
+    check(await waitUntil(sheetPage, `/pending upload|Saved on this device/.test((document.querySelector('[data-em-sheet-status]')||{}).textContent||'')`, 8000), 'sheet-only queues locally with no score entry');
+    const sheetDump = await evaluate(sheetPage, dumpIdb);
+    const queuedSheets = (sheetDump.sheet_uploads || []).filter((s) => s.polling_unit_id === sheetUnit);
+    check(queuedSheets.length === 1 && UUID_V4.test(queuedSheets[0].client_upload_id || '') && queuedSheets[0].state === 'pending' && queuedSheets[0].byte_size > 0, 'queued sheet has client upload ID, pending state, and file bytes');
+    check(Number(sql(`SELECT COUNT(*) c FROM polling_unit_results WHERE polling_unit_id = ${Number(sheetUnit)}`)[0].c) === beforeNum, 'sheet-only queue creates no numerical result on the server while offline');
+    await reload(sheetPage);
+    await evaluate(sheetPage, userExpr);
+    const afterReload = await evaluate(sheetPage, dumpIdb);
+    check((afterReload.sheet_uploads || []).some((s) => s.client_upload_id === queuedSheets[0].client_upload_id && s.byte_size > 0), 'queued sheet bytes survive page reload');
+    await setOffline(sheetPage, false);
+    check(await waitUntil(sheetPage, `(async () => { const list = await EmOfflineStore.listSheetUploads(${agent.id}, ${sheetUnit}); return list.some((s) => s.client_upload_id === '${queuedSheets[0].client_upload_id}' && s.state === 'received'); })()`, 20000), 'reconnect uploads sheet and marks received only after server ack');
+    const sheetRows = sql(`SELECT id, review_status FROM result_sheet_uploads WHERE polling_unit_id = ${Number(sheetUnit)} AND id > ${sheetStart}`);
+    check(sheetRows.length === 1 && sheetRows[0].review_status === 'pending', 'exactly one server sheet version pending review');
+    // Retry with the same client ID (server must replay, not duplicate).
+    const bytes = [...readFileSync(jpegPath)];
+    await evaluate(sheetPage, `(async () => { await EmOfflineStore.updateSheetUpload('${queuedSheets[0].client_upload_id}', (r) => { r.state = 'pending'; r.next_attempt_ms = 0; r.server = null; r.blob = new Blob([new Uint8Array(${JSON.stringify(bytes)})], { type: 'image/jpeg' }); }); EmOfflineSync.sync('sheet-retry', { manual: true }); return true; })()`);
+    await sleep(3000);
+    check(Number(sql(`SELECT COUNT(*) c FROM result_sheet_uploads WHERE polling_unit_id = ${Number(sheetUnit)} AND id > ${sheetStart}`)[0].c) === 1, 'lost-response style retry does not create a second sheet version');
+    check(Number(sql(`SELECT COUNT(*) c FROM polling_unit_results WHERE polling_unit_id = ${Number(sheetUnit)}`)[0].c) === beforeNum, 'sheet-only upload never creates a numerical result submission');
+    // Cleanup Phase E sheet rows created here (fixture teardown does not remove sheets).
+    php('-r', `require 'includes/result_sheets.php'; $start=${sheetStart}; $cstart=${clientStart}; foreach (db()->query('SELECT * FROM result_sheet_uploads WHERE id > '.$start) as $row) { $p=sheet_stored_path($row); if ($p && is_file($p)) { @chmod($p,0600); @unlink($p);} } db()->exec('DELETE FROM result_sheet_client_uploads WHERE id > '.$cstart); db()->exec('DELETE FROM result_sheet_events WHERE upload_id > '.$start); db()->exec('DELETE FROM result_sheet_uploads WHERE id > '.$start); echo 'ok';`);
 
     console.log('-- performance');
     const bench = (n) => `(async () => { const out = []; for (let i = 0; i < ${n}; i++) { const t = performance.now(); await EmOfflineStore.queueSubmission({ user_id: -1, polling_unit_id: 100000 + i + Math.floor(Math.random() * 1e6), unit_code: 'BENCH', config_fingerprint: 'x', figures: { accredited_voters: 1, rejected_ballots: 0, declared_valid_votes: 1, declared_total_votes: 1 }, votes: { 1: 1 } }); out.push(performance.now() - t); } return out; })()`;

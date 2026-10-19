@@ -7,6 +7,7 @@ if (PHP_SAPI !== 'cli') {
 }
 
 require_once dirname(__DIR__) . '/includes/auth.php';
+require_once dirname(__DIR__) . '/includes/scope.php';
 require_once dirname(__DIR__) . '/includes/collation.php';
 
 const BASE = 'http://localhost/election-monitor-app/';
@@ -164,6 +165,12 @@ try {
     $assign = db()->prepare('UPDATE polling_units SET agent_user_id = :agent WHERE id = :unit');
     $assign->execute(['agent' => $ids['rr.agenta'], 'unit' => $unitA]);
     $assign->execute(['agent' => $ids['rr.agentb'], 'unit' => $unitB]);
+    if (scope_schema_ready()) {
+        $scopeAssign = scope_assign_ward($ids['rr.officer'], $wardId, $ids['rr.admin']);
+        if (!$scopeAssign['ok']) {
+            throw new RuntimeException('Could not assign ward scope to collation officer: ' . $scopeAssign['error']);
+        }
+    }
 
     $agentA = new Client();
     $agentB = new Client();
@@ -362,7 +369,12 @@ try {
         db()->prepare('UPDATE polling_units SET agent_user_id = NULL WHERE id = :id')->execute(['id' => (int) $unit['id']]);
     }
     if ($ids !== []) {
-        db()->exec('DELETE FROM users WHERE id IN (' . implode(',', array_map('intval', $ids)) . ')');
+        $idList = implode(',', array_map('intval', $ids));
+        if (scope_schema_ready()) {
+            db()->exec('DELETE FROM user_ward_scopes WHERE user_id IN (' . $idList . ')');
+            db()->exec('DELETE FROM user_unit_scopes WHERE user_id IN (' . $idList . ')');
+        }
+        db()->exec('DELETE FROM users WHERE id IN (' . $idList . ')');
     }
     check(count_where("SELECT COUNT(*) FROM users WHERE username LIKE 'rr.%'") === 0 && count_where('SELECT COUNT(*) FROM polling_unit_results') === 0 && count_where("SELECT COUNT(*) FROM candidates WHERE party IN ('TSTA','TSTB')") === 0, 'test users, candidates, and results removed');
 }

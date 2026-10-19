@@ -196,8 +196,8 @@ try {
     check(str_contains($routeOfficer['location'], '/agents/dashboard'), 'collation officer routed to field workspace');
     check($agentA->req('agent/dashboard')['code'] === 200 && $admin->req('admin/dashboard')['code'] === 200, 'dashboards still load');
     $entryA = $agentA->req('results/entry.php?unit=' . $unitA);
-    check($entryA['code'] === 200 && str_contains($entryA['body'], 'Upload result sheet'), 'agent result entry page loads with upload form');
-    if (!str_contains($entryA['body'], 'Upload result sheet')) {
+    check($entryA['code'] === 200 && (str_contains($entryA['body'], 'Submit result sheet only') || str_contains($entryA['body'], 'Upload result sheet')) && str_contains($entryA['body'], 'name="result_sheet"'), 'agent result entry page loads with upload form');
+    if ($entryA['code'] !== 200 || !str_contains($entryA['body'], 'name="result_sheet"')) {
         echo 'DEBUG entry code ' . $entryA['code'] . ' location ' . $entryA['location'] . PHP_EOL;
         echo 'DEBUG ' . substr(strip_tags((string) preg_replace('#<(style|script)[^>]*>.*?</\1>#s', '', $entryA['body'])), -1500) . PHP_EOL;
         throw new RuntimeException('stop');
@@ -382,7 +382,12 @@ try {
     check($feed['code'] === 200 && is_array($json['items'] ?? null) && ($json['items'][0]['integrity'] ?? '') !== '' && !str_contains($feed['body'], 'stored_name') && !str_contains($feed['body'], 'hmac'), 'live feed has integrity fields and no internals');
     check($viewer->req('results/live-feed.php')['code'] === 403 && $viewer->req('results/sheet-file.php?id=' . $v2Id)['code'] === 403, 'viewer still cannot reach sheets');
     $entryAgain = $agentA->req('results/entry.php?unit=' . $unitA);
-    check(str_contains($entryAgain['body'], 'Upload new version') && str_contains($entryAgain['body'], 'Version 2') && str_contains($entryAgain['body'], 'Version 1'), 'agent sees own version history and new-version form');
+    check(
+        (str_contains($entryAgain['body'], 'Upload new version') || str_contains($entryAgain['body'], 'Submit result sheet only (new version)'))
+        && str_contains($entryAgain['body'], 'Version 2')
+        && str_contains($entryAgain['body'], 'Version 1'),
+        'agent sees own version history and new-version form'
+    );
 
     echo "-- 12. integrity incident management\n";
     $incC = (int) db()->query("SELECT id FROM result_sheet_incidents WHERE upload_id = " . $b1Id . " AND incident_type = 'content_mismatch' ORDER BY id LIMIT 1")->fetchColumn();

@@ -38,8 +38,9 @@ declare(strict_types=1);
  * enable_hsts [ENABLE_HSTS]         When true and the request is HTTPS, send Strict-Transport-Security.
  *   Enable only after HTTPS works for the production domain and any required subdomains.
  *
- * Authorization note: supervisor, collation_officer, and viewer roles can read provisional typed
- * results for all units by design. Narrowing that scope is a product decision, not a silent default.
+ * Authorization note: supervisor, collation_officer, and viewer roles require explicit geographic
+ * scopes (user_ward_scopes / user_unit_scopes). Empty scope means no access. Admin and super_admin
+ * remain organisation-wide. Polling agents remain limited to their own active unit assignments.
  *
  * Assignment emails (env names in brackets override this file):
  * app_url [APP_URL]            Canonical address used in email links, e.g. https://monitor.example.org.

@@ -11,7 +11,7 @@ if (!report_schema_ready()) {
 }
 
 try {
-    $overview = report_overview();
+    $overview = report_overview($user);
 } catch (PDOException $exception) {
     error_log($exception->getMessage());
     http_response_code(500);

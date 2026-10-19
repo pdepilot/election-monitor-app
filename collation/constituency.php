@@ -9,10 +9,15 @@ if (!collation_schema_ready()) {
     collation_render_missing_schema($user);
     exit;
 }
+if (!scope_is_org_wide($user)) {
+    http_response_code(403);
+    render_forbidden($user);
+    exit;
+}
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $token = $_POST['csrf_token'] ?? null;
-    if (!collation_can_sign($user)) {
+    if (!collation_can_sign_constituency($user)) {
         http_response_code(403);
         collation_flash('error', 'Your account cannot sign a collation.');
         collation_redirect('collation/constituency.php');
@@ -102,7 +107,7 @@ render_shell_start('Constituency collation', 'collation', $user);
             <?php if (is_array($record)): ?>
             <p class="pu-note">Last signed<?= $record['collated_by_name'] !== null ? ' by ' . e((string) $record['collated_by_name']) : '' ?> on <?= e((string) $record['collated_at']) ?>, covering <?= e((string) $record['ward_count']) ?> wards.</p>
             <?php endif; ?>
-            <?php if (collation_can_sign($user)): ?>
+            <?php if (collation_can_sign_constituency($user)): ?>
             <form method="post" action="<?= e(url('collation/constituency.php')) ?>" data-pu-busy="Saving…">
                 <input type="hidden" name="csrf_token" value="<?= e(csrf_token()) ?>">
                 <input type="hidden" name="intent" value="collate">

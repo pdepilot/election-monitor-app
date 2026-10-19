@@ -11,8 +11,8 @@ if (!collation_schema_ready()) {
 }
 
 try {
-    $summary = collation_summary();
-    $wards = collation_ward_rows();
+    $summary = collation_summary($user);
+    $wards = collation_ward_rows($user);
     $reviewSummary = collation_review_summary();
 } catch (PDOException $exception) {
     error_log($exception->getMessage());
