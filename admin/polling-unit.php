@@ -245,7 +245,7 @@ render_shell_start($title, 'polling-units', $user);
 <header class="cms-page__header">
     <div>
         <h1 class="cms-page__title"><?= e($title) ?></h1>
-        <p class="cms-page__subtitle"><?= $unit === null ? 'Ohaji/Egbema' : e((string) $unit['unit_code']) ?></p>
+        <p class="cms-page__subtitle"><?= $unit === null ? e(PU_CONSTITUENCY_LABEL) : e((string) $unit['unit_code']) ?></p>
     </div>
 </header>
 <?php if ($flash !== null): ?>
@@ -280,7 +280,12 @@ render_shell_start($title, 'polling-units', $user);
                     <select id="ward_id" name="ward_id" required>
                         <option value="">Select a ward</option>
                         <?php foreach ($wards as $ward): ?>
-                        <option value="<?= e((string) $ward['id']) ?>"<?= $values['ward_id'] === $ward['id'] ? ' selected' : '' ?>><?= e($ward['name']) ?></option>
+                        <?php
+                        $wardKey = pu_canonical_ward((string) $ward['name']);
+                        $wardLga = $wardKey !== null ? (pu_lga_for_ward_key($wardKey) ?? '') : '';
+                        $wardLabel = $wardLga !== '' ? $ward['name'] . ' — ' . $wardLga : $ward['name'];
+                        ?>
+                        <option value="<?= e((string) $ward['id']) ?>"<?= $values['ward_id'] === $ward['id'] ? ' selected' : '' ?>><?= e($wardLabel) ?></option>
                         <?php endforeach; ?>
                     </select>
                     <?php if (($errors['ward_id'] ?? '') !== ''): ?><span class="pu-error"><?= e($errors['ward_id']) ?></span><?php endif; ?>
@@ -296,7 +301,7 @@ render_shell_start($title, 'polling-units', $user);
                     <?php if (($errors['classification'] ?? '') !== ''): ?><span class="pu-error"><?= e($errors['classification']) ?></span><?php endif; ?>
                 </div>
             </div>
-            <p class="pu-note">LGA is Ohaji/Egbema. The polling-unit ID is stored exactly as entered.</p>
+            <p class="pu-note">LGA is set from the selected ward (Ohaji/Egbema or Oguta). The polling-unit ID is stored exactly as entered.</p>
             <?php if ($mode === 'edit'): ?>
             <label class="pu-check"><input type="checkbox" name="is_active" value="1"<?= $values['is_active'] === 1 ? ' checked' : '' ?>> Active</label>
             <?php endif; ?>

@@ -8,13 +8,21 @@ require_once __DIR__ . '/dashboard_view.php';
 
 const PU_MANAGERS = ['super_admin', 'admin'];
 const PU_CLASSIFICATIONS = ['EXISTING PU', 'NEW PU'];
+/** @deprecated Use PU_ALLOWED_LGAS; kept for older call sites that expect the Ohaji default. */
 const PU_LGA = 'Ohaji/Egbema';
+const PU_ALLOWED_LGAS = ['Ohaji/Egbema', 'Oguta'];
+const PU_CONSTITUENCY_LABEL = 'Ohaji/Egbema, Oguta and Oru West Federal Constituency';
 const PU_PAGE_SIZE = 20;
 const PU_IMPORT_MAX_BYTES = 2097152;
 const PU_IMPORT_MAX_ROWS = 1000;
 const PU_REGISTER_NOTE = 'Counts on this page come from the polling units saved in the database. This register has not been checked against the current INEC register.';
 
+/**
+ * Expected unit counts per ward (validation targets, not an INEC verification).
+ * EGWE/EGBUOMA (16-16-10) is held back until its codes are complete and verified.
+ */
 const PU_WARD_TARGETS = [
+    // Ohaji/Egbema
     'ASSA/OBILE' => 16,
     'AWARA/IKWEREDE' => 20,
     'EGBEMA A' => 27,
@@ -27,6 +35,43 @@ const PU_WARD_TARGETS = [
     'OHOBA' => 27,
     'UMUAGWO' => 24,
     'UMUAPU' => 13,
+    // Oguta
+    'AWA' => 22,
+    'IZOMBE' => 20,
+    'MBALA/UBA' => 12,
+    'NDEULOUKWU/UMUOWERE' => 7,
+    'OBUDI/ARO' => 16,
+    'OGUTA A' => 21,
+    'OGUTA B' => 13,
+    'ORU' => 25,
+    'OSSEMOTOR/ENUIGBO' => 9,
+    'UWAORIE' => 19,
+];
+
+/** @var array<string, string> ward canonical name => LGA display name */
+const PU_WARD_LGA = [
+    'ASSA/OBILE' => 'Ohaji/Egbema',
+    'AWARA/IKWEREDE' => 'Ohaji/Egbema',
+    'EGBEMA A' => 'Ohaji/Egbema',
+    'EGBEMA B' => 'Ohaji/Egbema',
+    'EGBEMA C' => 'Ohaji/Egbema',
+    'EGBEMA D' => 'Ohaji/Egbema',
+    'EGBEMA E' => 'Ohaji/Egbema',
+    'EKWUATO' => 'Ohaji/Egbema',
+    'OBITTI/MGBISHI' => 'Ohaji/Egbema',
+    'OHOBA' => 'Ohaji/Egbema',
+    'UMUAGWO' => 'Ohaji/Egbema',
+    'UMUAPU' => 'Ohaji/Egbema',
+    'AWA' => 'Oguta',
+    'IZOMBE' => 'Oguta',
+    'MBALA/UBA' => 'Oguta',
+    'NDEULOUKWU/UMUOWERE' => 'Oguta',
+    'OBUDI/ARO' => 'Oguta',
+    'OGUTA A' => 'Oguta',
+    'OGUTA B' => 'Oguta',
+    'ORU' => 'Oguta',
+    'OSSEMOTOR/ENUIGBO' => 'Oguta',
+    'UWAORIE' => 'Oguta',
 ];
 
 /**
@@ -107,6 +152,8 @@ function pu_canonical_ward(string $name): ?string
     $key = strtoupper(trim($name));
     $key = preg_replace('/\s+/', ' ', $key) ?? '';
     $key = str_replace([' / ', '/ ', ' /'], '/', $key);
+    $key = preg_replace("/['’]/u", '', $key) ?? $key;
+    $key = preg_replace('/\s+WARD\z/', '', $key) ?? $key;
 
     return array_key_exists($key, PU_WARD_TARGETS) ? $key : null;
 }
@@ -116,8 +163,34 @@ function pu_canonical_lga(string $name): ?string
     $key = strtolower(trim($name));
     $key = preg_replace('/\s+/', ' ', $key) ?? '';
     $key = str_replace([' / ', '/ ', ' /'], '/', $key);
+    foreach (PU_ALLOWED_LGAS as $allowed) {
+        if ($key === strtolower($allowed)) {
+            return $allowed;
+        }
+    }
 
-    return $key === 'ohaji/egbema' ? PU_LGA : null;
+    return null;
+}
+
+function pu_lga_for_ward_key(string $wardKey): ?string
+{
+    return PU_WARD_LGA[$wardKey] ?? null;
+}
+
+function pu_lga_for_ward_id(int $wardId): ?string
+{
+    if ($wardId < 1) {
+        return null;
+    }
+    foreach (pu_wards() as $ward) {
+        if ($ward['id'] === $wardId) {
+            $key = pu_canonical_ward($ward['name']);
+
+            return $key !== null ? pu_lga_for_ward_key($key) : null;
+        }
+    }
+
+    return null;
 }
 
 function pu_canonical_classification(string $value): ?string
@@ -672,6 +745,7 @@ function pu_audit(?int $actorId, string $action, ?int $entityId, string $summary
 
 function pu_create(array $data, int $actorId): int
 {
+    $lga = pu_lga_for_ward_id((int) $data['ward_id']) ?? PU_LGA;
     $statement = db()->prepare(
         'INSERT INTO polling_units (unit_code, name, ward_id, lga_name, classification, is_active)
          VALUES (:unit_code, :name, :ward_id, :lga_name, :classification, 1)'
@@ -679,7 +753,7 @@ function pu_create(array $data, int $actorId): int
     $statement->bindValue(':unit_code', $data['unit_code'], PDO::PARAM_STR);
     $statement->bindValue(':name', $data['name'], PDO::PARAM_STR);
     $statement->bindValue(':ward_id', $data['ward_id'], PDO::PARAM_INT);
-    $statement->bindValue(':lga_name', PU_LGA, PDO::PARAM_STR);
+    $statement->bindValue(':lga_name', $lga, PDO::PARAM_STR);
     $statement->bindValue(':classification', $data['classification'], PDO::PARAM_STR);
     $statement->execute();
     $id = (int) db()->lastInsertId();
@@ -690,6 +764,7 @@ function pu_create(array $data, int $actorId): int
 
 function pu_update(int $id, array $data, int $actorId, string $previousCode): void
 {
+    $lga = pu_lga_for_ward_id((int) $data['ward_id']) ?? PU_LGA;
     $statement = db()->prepare(
         'UPDATE polling_units
          SET unit_code = :unit_code, name = :name, ward_id = :ward_id,
@@ -699,7 +774,7 @@ function pu_update(int $id, array $data, int $actorId, string $previousCode): vo
     $statement->bindValue(':unit_code', $data['unit_code'], PDO::PARAM_STR);
     $statement->bindValue(':name', $data['name'], PDO::PARAM_STR);
     $statement->bindValue(':ward_id', $data['ward_id'], PDO::PARAM_INT);
-    $statement->bindValue(':lga_name', PU_LGA, PDO::PARAM_STR);
+    $statement->bindValue(':lga_name', $lga, PDO::PARAM_STR);
     $statement->bindValue(':classification', $data['classification'], PDO::PARAM_STR);
     $statement->bindValue(':is_active', $data['is_active'], PDO::PARAM_INT);
     $statement->bindValue(':id', $id, PDO::PARAM_INT);
@@ -1045,12 +1120,13 @@ function pu_classify_import_rows(array $records): array
         }
         if ($wardKey === null || !isset($wardMap[$wardKey])) {
             $failed++;
-            $failures[] = ['line' => $record['line'], 'polling_unit_id' => $code, 'message' => 'Ward name does not match one of the 12 Ohaji/Egbema wards.'];
+            $failures[] = ['line' => $record['line'], 'polling_unit_id' => $code, 'message' => 'Ward name does not match a registered constituency ward.'];
             continue;
         }
-        if ($lga === null) {
+        $expectedLga = pu_lga_for_ward_key($wardKey);
+        if ($lga === null || $expectedLga === null || $lga !== $expectedLga) {
             $failed++;
-            $failures[] = ['line' => $record['line'], 'polling_unit_id' => $code, 'message' => 'LGA must be Ohaji/Egbema.'];
+            $failures[] = ['line' => $record['line'], 'polling_unit_id' => $code, 'message' => 'LGA must match the ward (Ohaji/Egbema or Oguta).'];
             continue;
         }
         if ($classification === null) {
@@ -1149,8 +1225,11 @@ function pu_write_import_rows(array $rows, ?int $actorId): array
         $code = pu_normalize_code((string) ($row['unit_code'] ?? ''));
         $name = pu_normalize_name((string) ($row['name'] ?? ''));
         $classification = pu_canonical_classification((string) ($row['classification'] ?? ''));
-        $lga = (string) ($row['lga_name'] ?? '') === PU_LGA ? PU_LGA : null;
-        $wardId = (int) ($row['ward_id'] ?? 0);
+        $lga = pu_canonical_lga((string) ($row['lga_name'] ?? ''));
+        $wardLga = pu_lga_for_ward_id($wardId = (int) ($row['ward_id'] ?? 0));
+        if ($lga === null || $wardLga === null || $lga !== $wardLga) {
+            $lga = null;
+        }
         $wardOk = false;
         foreach ($wardMap as $ward) {
             if ($ward['id'] === $wardId) {
@@ -1184,7 +1263,7 @@ function pu_write_import_rows(array $rows, ?int $actorId): array
         $insert->bindValue(':unit_code', $code, PDO::PARAM_STR);
         $insert->bindValue(':name', $name, PDO::PARAM_STR);
         $insert->bindValue(':ward_id', $wardId, PDO::PARAM_INT);
-        $insert->bindValue(':lga_name', PU_LGA, PDO::PARAM_STR);
+        $insert->bindValue(':lga_name', $lga, PDO::PARAM_STR);
         $insert->bindValue(':classification', $classification, PDO::PARAM_STR);
         $insert->execute();
         $inserted++;
@@ -1223,7 +1302,7 @@ function pu_render_missing_schema(array $user): void
     </header>
     <article class="cms-card">
         <div class="cms-card__body">
-            <p>Apply the migration, then reload this page. The command creates the missing tables and the 12 ward targets. It does not remove existing data.</p>
+            <p>Apply the polling-unit migrations, then reload this page. They create missing tables and ward targets for Ohaji/Egbema and Oguta. They do not remove existing data.</p>
             <p class="cms-muted">mysql -u root election_monitor_app &lt; database/migration_polling_units.sql</p>
         </div>
     </article>

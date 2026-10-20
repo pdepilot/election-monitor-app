@@ -51,14 +51,14 @@ function render_workspace(string $title, string $intro, array $roles): void
     <header class="cms-page__header">
         <div>
             <h1 class="cms-page__title"><?= e($title) ?></h1>
-            <p class="cms-page__subtitle">Welcome back, <?= e($user['full_name']) ?>. Ohaji/Egbema Federal Constituency, Imo State.</p>
+            <p class="cms-page__subtitle">Welcome back, <?= e($user['full_name']) ?>. Ohaji/Egbema, Oguta and Oru West Federal Constituency, Imo State.</p>
         </div>
         <div class="cms-page__actions">
             <span class="cms-badge cms-badge--muted"><?= e($now->format('D, M j · g:i A')) ?></span>
         </div>
     </header>
 
-    <p class="cms-section-label">Ohaji/Egbema — Monitoring</p>
+    <p class="cms-section-label">Constituency monitoring</p>
     <div class="cms-stats">
         <article class="cms-stat cms-card">
             <div class="cms-stat__top">

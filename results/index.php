@@ -41,7 +41,7 @@ render_shell_start('Results', 'results', $user);
 <header class="cms-page__header">
     <div>
         <h1 class="cms-page__title">Results</h1>
-        <p class="cms-page__subtitle">Polling-unit scores for Ohaji/Egbema.</p>
+        <p class="cms-page__subtitle">Polling-unit scores for Ohaji/Egbema and Oguta.</p>
     </div>
     <?php if (result_is_manager($user)): ?>
     <div class="cms-page__actions">

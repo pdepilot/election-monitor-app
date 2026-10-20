@@ -130,7 +130,7 @@ render_shell_start('Polling Unit Management', 'polling-units', $user);
 <header class="cms-page__header">
     <div>
         <h1 class="cms-page__title">Polling Unit Management</h1>
-        <p class="cms-page__subtitle"><?= e((string) $summary['total_units']) ?> polling units across <?= e((string) $summary['total_wards']) ?> wards. Ohaji/Egbema Federal Constituency, Imo State.</p>
+        <p class="cms-page__subtitle"><?= e((string) $summary['total_units']) ?> polling units across <?= e((string) $summary['total_wards']) ?> wards. <?= e(PU_CONSTITUENCY_LABEL) ?>, Imo State.</p>
     </div>
     <div class="cms-page__actions">
         <a class="cms-btn cms-btn--primary" href="<?= e(url('admin/polling-unit.php?mode=create')) ?>">Add polling unit</a>
@@ -357,7 +357,7 @@ render_shell_start('Polling Unit Management', 'polling-units', $user);
         <div class="cms-card__head"><h2 class="cms-card__title">Import a CSV register</h2></div>
         <div class="cms-card__body">
             <p>Use the official file from the constituency register. The preview checks every row before anything is saved. Import inserts new polling-unit IDs only and does not overwrite an existing record.</p>
-            <p class="pu-note">Columns: polling_unit_id, polling_unit_name, ward_name, lga_name, classification. Classification must be EXISTING PU or NEW PU. LGA must be Ohaji/Egbema. <a href="<?= e(url('database/polling_units_template.csv')) ?>">Download the CSV template</a>.</p>
+            <p class="pu-note">Columns: polling_unit_id, polling_unit_name, ward_name, lga_name, classification. Classification must be EXISTING PU or NEW PU. LGA must be Ohaji/Egbema or Oguta and must match the ward. <a href="<?= e(url('database/polling_units_template.csv')) ?>">Download the CSV template</a>.</p>
             <form method="post" action="<?= e(url('admin/polling-units.php')) ?>" enctype="multipart/form-data" data-pu-busy="Checking file…">
                 <input type="hidden" name="csrf_token" value="<?= e(csrf_token()) ?>">
                 <input type="hidden" name="intent" value="preview">
