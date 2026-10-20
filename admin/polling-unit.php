@@ -301,7 +301,7 @@ render_shell_start($title, 'polling-units', $user);
                     <?php if (($errors['classification'] ?? '') !== ''): ?><span class="pu-error"><?= e($errors['classification']) ?></span><?php endif; ?>
                 </div>
             </div>
-            <p class="pu-note">LGA is set from the selected ward (Ohaji/Egbema or Oguta). The polling-unit ID is stored exactly as entered.</p>
+            <p class="pu-note">LGA is set from the selected ward (Ohaji/Egbema, Oguta, or Oru West). The polling-unit ID is stored exactly as entered.</p>
             <?php if ($mode === 'edit'): ?>
             <label class="pu-check"><input type="checkbox" name="is_active" value="1"<?= $values['is_active'] === 1 ? ' checked' : '' ?>> Active</label>
             <?php endif; ?>

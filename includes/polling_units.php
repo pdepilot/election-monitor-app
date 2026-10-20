@@ -10,7 +10,7 @@ const PU_MANAGERS = ['super_admin', 'admin'];
 const PU_CLASSIFICATIONS = ['EXISTING PU', 'NEW PU'];
 /** @deprecated Use PU_ALLOWED_LGAS; kept for older call sites that expect the Ohaji default. */
 const PU_LGA = 'Ohaji/Egbema';
-const PU_ALLOWED_LGAS = ['Ohaji/Egbema', 'Oguta'];
+const PU_ALLOWED_LGAS = ['Ohaji/Egbema', 'Oguta', 'Oru West'];
 const PU_CONSTITUENCY_LABEL = 'Ohaji/Egbema, Oguta and Oru West Federal Constituency';
 const PU_PAGE_SIZE = 20;
 const PU_IMPORT_MAX_BYTES = 2097152;
@@ -19,7 +19,9 @@ const PU_REGISTER_NOTE = 'Counts on this page come from the polling units saved 
 
 /**
  * Expected unit counts per ward (validation targets, not an INEC verification).
- * EGWE/EGBUOMA (16-16-10) is held back until its codes are complete and verified.
+ * Held back until codes/names are complete and verified:
+ * - EGWE/EGBUOMA (16-16-10)
+ * - NEMPI/ELEM rows labelled 16-23-09-021 and 16-23-09-022 (wrong LGA/ward prefix)
  */
 const PU_WARD_TARGETS = [
     // Ohaji/Egbema
@@ -46,6 +48,17 @@ const PU_WARD_TARGETS = [
     'ORU' => 25,
     'OSSEMOTOR/ENUIGBO' => 9,
     'UWAORIE' => 19,
+    // Oru West (NEMPI/ELEM = 19 verified 16-24-01 codes; claimed 22)
+    'NEMPI/ELEM' => 19,
+    'OTULU' => 13,
+    'AJI' => 7,
+    'IBIASO EGBE' => 12,
+    'AMAFUO' => 5,
+    'OHAKPU' => 7,
+    'OZARA' => 9,
+    'UBULU' => 24,
+    'MGBIDI I' => 21,
+    'MGBIDI II' => 30,
 ];
 
 /** @var array<string, string> ward canonical name => LGA display name */
@@ -72,6 +85,16 @@ const PU_WARD_LGA = [
     'ORU' => 'Oguta',
     'OSSEMOTOR/ENUIGBO' => 'Oguta',
     'UWAORIE' => 'Oguta',
+    'NEMPI/ELEM' => 'Oru West',
+    'OTULU' => 'Oru West',
+    'AJI' => 'Oru West',
+    'IBIASO EGBE' => 'Oru West',
+    'AMAFUO' => 'Oru West',
+    'OHAKPU' => 'Oru West',
+    'OZARA' => 'Oru West',
+    'UBULU' => 'Oru West',
+    'MGBIDI I' => 'Oru West',
+    'MGBIDI II' => 'Oru West',
 ];
 
 /**
@@ -1126,7 +1149,7 @@ function pu_classify_import_rows(array $records): array
         $expectedLga = pu_lga_for_ward_key($wardKey);
         if ($lga === null || $expectedLga === null || $lga !== $expectedLga) {
             $failed++;
-            $failures[] = ['line' => $record['line'], 'polling_unit_id' => $code, 'message' => 'LGA must match the ward (Ohaji/Egbema or Oguta).'];
+            $failures[] = ['line' => $record['line'], 'polling_unit_id' => $code, 'message' => 'LGA must match the ward (Ohaji/Egbema, Oguta, or Oru West).'];
             continue;
         }
         if ($classification === null) {

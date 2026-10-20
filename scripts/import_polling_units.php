@@ -11,7 +11,7 @@ require_once dirname(__DIR__) . '/includes/polling_units.php';
 function import_polling_units_usage(): void
 {
     fwrite(STDOUT, <<<'TXT'
-Import constituency polling units from a CSV file (Ohaji/Egbema or Oguta).
+Import constituency polling units from a CSV file (Ohaji/Egbema, Oguta, or Oru West).
 
 Usage:
   php scripts/import_polling_units.php --file=register.csv
